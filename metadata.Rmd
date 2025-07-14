@@ -1,0 +1,272 @@
+---
+title: "Metadata"
+author: "matsuda"
+date: "2023-05-12"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(openxlsx)
+
+```
+
+## R Markdown
+```{r}
+
+bag.loc<-read.csv("metadata for bags.csv") #cols: fragid and tank location
+bag.loc$fragid<-as.factor(bag.loc$fragid)
+bag.loc$tank<-as.factor(bag.loc$tank) 
+
+#correct issues
+bag.loc <- bag.loc %>%
+  mutate(fragid = case_when(
+    fragid == "1273-11" & tank == "HI_Control_1"     ~ "1273-4",
+    fragid == "1291-2"  & tank == "President's"      ~ "1291-5",
+    TRUE ~ fragid
+  ))
+
+
+species<-read.csv("species_frag.csv") # cols: fragid and species
+species$species<-as.factor(species$species)
+
+meta<-merge(bag.loc, species, by="fragid",all.x= TRUE)
+
+meta <- rename(meta, Frag.ID = fragid)
+
+#write.csv(meta,"metadataGT23.csv")
+
+
+```
+Join meta with tissue sample data
+```{r}
+samp_meta<-read.csv("GT23_metadata_fromsharepoint_20250707.csv")
+  samp_meta$Frag.ID<-as.factor(samp_meta$Frag.ID)
+    samp_meta$Tank<-as.factor(samp_meta$Tank)
+    samp_meta$Type<-as.factor(samp_meta$Type)
+
+  samp_meta <- samp_meta %>%
+  mutate(Frag.ID = case_when(
+    Frag.ID == "1273-11" & Tank == "HI_Control_1" ~ "1273-4",
+    TRUE ~ Frag.ID
+  ))
+
+  samp_meta <- samp_meta %>%
+  rename(Tank.datasheet = Tank)
+    
+  
+  merged_dftest <- left_join(samp_meta, meta, by = "Frag.ID")
+
+
+
+well_meta<-read.csv("GT23PCRPlateKey.csv")
+well_meta <- rename(well_meta, DNAwell = Well)
+
+#write.csv(merged_dftest,"merged_dftest.csv")
+
+
+
+merged_df <- left_join(merged_dftest, meta, by = "Frag.ID")
+
+test<-left_join(merged_dftest, well_meta, by = c("Tube" = "Tube", "DNA_plate" = "DNA_plate"))
+
+
+
+#these include the antibiotics. they do not include sterivex
+
+#create ACER subset: 
+Acer<-subset(test, species=="Acer") #355 samples
+Acer<-subset(Acer, Time.point!="Week 3") # Remove week 3, 306 samples
+Acer<-subset(Acer, Tank.datasheet!="Extra") #remove extras, 295 samples
+Acer<-subset(Acer, Notes!="Before moving to Quad") #remove extras, 287 samples
+
+#create MCAP subset: 345 samples
+Mcap<-subset(test, species=="Mcap") #345 samps
+Mcap<-subset(Mcap, Time.point!="Week 3") # remove week 3 292 samples
+Mcap<-subset(Mcap, Tank.datasheet!="Extra") #remove extras, 280 samples
+Mcap<-subset(Mcap, Notes!="Before moving to Quad") #remove extras, 280 samples
+Mcap<-subset(Mcap, Tube!="1455") #remove extras, 269 samples
+Mcap <- subset(Mcap, !is.na(DNA_plateN))
+
+#total 556 acer and mcap without week 3. and missing some day 0 which sucks this is the run
+
+```
+
+Let's make plates: 2 PCR blanks, 1 Mock, 1 DNA blank, try to keep Time.points together and species together
+```{r}
+library(dplyr)
+
+
+# Step 1: Combine Acer and Mcap with a column to track species
+Acer <- Acer %>% mutate(SpeciesGroup = "Acer")
+Mcap <- Mcap %>% mutate(SpeciesGroup = "Mcap")
+
+samples <- bind_rows(Acer, Mcap)
+
+# Step 2: Sort to prioritize grouping by species, then Time.point
+samples_ordered <- samples %>%
+  arrange(SpeciesGroup, Time.point)
+
+# Step 3: Assign samples to plates (92 per plate)
+samples_ordered <- samples_ordered %>%
+  mutate(qPCRplate_number = ceiling(row_number() / 92))
+
+# Step 4: Create 4 controls per plate
+control_set <- data.frame(
+  species = c("PCR_blank", "PCR_blank", "Mock", "DNA_blank"),
+  Frag.ID = NA,
+  Time.point = NA,
+  SpeciesGroup = "Control"
+)
+
+# Duplicate the control set for each plate
+num_plates <- max(samples_ordered$qPCRplate_number)
+plate_controls <- lapply(1:num_plates, function(p) {
+  control_set %>%
+    mutate(qPCRplate_number = p,
+           Frag.ID = paste(species, p, sep = "_"))
+}) %>%
+  bind_rows()
+
+# Step 5: Combine controls with samples
+final_layout <- bind_rows(samples_ordered, plate_controls) %>%
+  arrange(qPCRplate_number, SpeciesGroup, Time.point, Frag.ID)
+
+# Step 6: Assign well positions A1–H12 (8 × 12 = 96 wells per plate)
+rows <- LETTERS[1:8]
+cols <- 1:12
+wells <- expand.grid(Row = rows, Column = cols) %>%
+  arrange(Row, Column) %>%
+  mutate(Well = paste0(Row, Column)) %>%
+  pull(Well)
+
+# Assign well positions within each plate
+final_layout <- final_layout %>%
+  group_by(qPCRplate_number) %>%
+  mutate(Well = wells[1:n()]) %>%
+  ungroup()
+
+# View output
+final_layout %>% select(qPCRplate_number, Well, Frag.ID, species, Time.point, SpeciesGroup)
+
+final_layout <- final_layout %>% #organize by plate and well
+  group_by(qPCRplate_number) %>%
+  arrange(DNA_plate, Well, .by_group = TRUE) %>%
+  ungroup()
+
+
+
+
+#make excel 96 well plate doc ####
+#First, do this by Tube number 
+
+# 1. Define well order
+rows <- LETTERS[1:8]
+cols <- sprintf("%02d", 1:12)
+wells <- paste0(rep(rows, each = 12), cols)
+
+# 2. Ensure your data has the 'Well' field in A01–H12 format
+# If your Well column isn't already in that format, fix it:
+final_layout <- final_layout %>%
+  mutate(Well = toupper(Well))  # Ensure it's A01, A02, etc.
+
+# 3. Create a workbook
+wb <- createWorkbook()
+
+# 4. Loop over each plate and format it as a plate layout
+plates <- unique(final_layout$qPCRplate_number)
+
+for (plate in plates) {
+  
+  plate_data <- final_layout %>% 
+    filter(qPCRplate_number == plate) %>%
+    mutate(Row = substr(Well, 1, 1),
+           Column = as.integer(substr(Well, 2, 3))) %>%
+    select(Row, Column, Frag.ID)  # Or change to `tube`, `species`, etc.
+
+  # Create an 8x12 matrix with row names A-H and column names 1-12
+  plate_matrix <- matrix(NA, nrow = 8, ncol = 12,
+                         dimnames = list(LETTERS[1:8], 1:12))
+
+  # Fill the matrix with Frag.ID or whatever value you want
+  for (i in 1:nrow(plate_data)) {
+    r <- plate_data$Row[i]
+    c <- plate_data$Column[i]
+    plate_matrix[r, c] <- plate_data$Frag.ID[i]
+  }
+
+  # Convert to data frame
+  plate_df <- as.data.frame(plate_matrix)
+  plate_df <- tibble::rownames_to_column(plate_df, var = "Row")
+
+  # Add sheet to workbook
+  addWorksheet(wb, paste0("Plate_", plate))
+  writeData(wb, sheet = paste0("Plate_", plate), plate_df)
+}
+
+# 5. Save workbook
+saveWorkbook(wb, "96_well_plate_layouts_byTUBE.xlsx", overwrite = TRUE)
+
+##Next do this by DNA plate and DNA well location:
+
+library(tidyverse)
+library(openxlsx)
+
+# 1. Define row/column structure for 96-well
+rows <- LETTERS[1:8]
+cols <- sprintf("%02d", 1:12)
+
+# 2. Ensure Well is uppercase (e.g., A01)
+final_layout <- final_layout %>%
+  mutate(Well = toupper(Well))
+
+# 3. Create workbook
+wb <- createWorkbook()
+
+# 4. Loop through each plate and populate matrix with DNA_plate + DNA_well
+plates <- unique(final_layout$qPCRplate_number)
+
+for (plate in plates) {
+  
+  plate_data <- final_layout %>% 
+    filter(qPCRplate_number == plate) %>%
+    mutate(
+      Row = substr(Well, 1, 1),
+      Column = as.integer(substr(Well, 2, 3)),
+      Combined = paste0(DNA_plate, "_", Well)  # Combine DNA_plate and DNA_well
+    ) %>%
+    select(Row, Column, Combined)
+
+  # 5. Create blank 8x12 plate matrix
+  plate_matrix <- matrix(NA, nrow = 8, ncol = 12,
+                         dimnames = list(LETTERS[1:8], 1:12))
+
+  # 6. Fill the matrix
+  for (i in 1:nrow(plate_data)) {
+    r <- plate_data$Row[i]
+    c <- plate_data$Column[i]
+    plate_matrix[r, c] <- plate_data$Combined[i]
+  }
+
+  # 7. Convert to data frame for Excel output
+  plate_df <- as.data.frame(plate_matrix)
+  plate_df <- tibble::rownames_to_column(plate_df, var = "Row")
+
+  # 8. Add sheet and write data
+  addWorksheet(wb, paste0("Plate_", plate))
+  writeData(wb, sheet = paste0("Plate_", plate), plate_df)
+}
+
+# 9. Save Excel file
+saveWorkbook(wb, "96_well_plate_DNA_layouts.xlsx", overwrite = TRUE)
+
+
+
+```
+
