@@ -32,7 +32,6 @@ bag.loc <- bag.loc %>%
     TRUE ~ fragid
   ))
 
-
 species<-read.csv("species_frag.csv") # cols: fragid and species
 species$species<-as.factor(species$species)
 
@@ -239,7 +238,7 @@ for (plate in plates) {
     mutate(
       Row = substr(Well, 1, 1),
       Column = as.integer(substr(Well, 2, 3)),
-      Combined = paste0(DNA_plate, "_", Well)  # Combine DNA_plate and DNA_well
+      Combined = paste0(DNA_plate, "_", Well)  # Combine DNA_plate and DNA_well ### Trista- this was the spot were the error was. it said "Well" which was the new well location, and not DNAwell.
     ) %>%
     select(Row, Column, Combined)
 
@@ -264,7 +263,7 @@ for (plate in plates) {
 }
 
 # 9. Save Excel file
-saveWorkbook(wb, "96_well_plate_DNA_layouts.xlsx", overwrite = TRUE)
+saveWorkbook(wb, "96_well_plate_DNA_layouts_Bad.xlsx", overwrite = TRUE)
 
 
 
