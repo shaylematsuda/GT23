@@ -40,8 +40,6 @@ meta<-merge(bag.loc, species, by="fragid",all.x= TRUE)
 meta <- rename(meta, Frag.ID = fragid)
 
 #write.csv(meta,"metadataGT23.csv")
-
-
 ```
 Join meta with tissue sample data
 ```{r}
@@ -59,21 +57,61 @@ samp_meta<-read.csv("GT23_metadata_fromsharepoint_20250707.csv")
   samp_meta <- samp_meta %>%
   rename(Tank.datasheet = Tank)
     
+   merged_df<- left_join(samp_meta, meta, by = "Frag.ID")
+
+   
+  Frag.name.match<- merged_df %>%
+  group_by(Frag.ID) %>%
+  summarise(
+    n = n(),
+    Tube = paste(unique(Tube), collapse = ", ")
+  ) %>%
+  arrange(desc(n))
+
+  # write.csv(Frag.name.match,"Frag.name.match.csv") figure out which frag ID recorded wrong and fix
   
-  merged_dftest <- left_join(samp_meta, meta, by = "Frag.ID")
-
-
-
+merged_df <- merged_df %>%
+  mutate(
+    Frag.ID = case_when(
+      Tube == 253 ~ "1293-1",
+      Tube == 274 ~ "1283-4",
+      Tube == 379 ~ "874-7",
+      TRUE ~ Frag.ID
+    )
+  )
+   
 well_meta<-read.csv("GT23PCRPlateKey.csv")
 well_meta <- rename(well_meta, DNAwell = Well)
-
+well_meta <- well_meta %>%  #if duplicates write dup
+  group_by(Tube) %>%
+  mutate(dup = if_else(n() > 1, "dup", NA_character_)) %>%
+  ungroup()
 #write.csv(merged_dftest,"merged_dftest.csv")
 
+merged_df <- left_join(merged_df, meta, by = "Frag.ID")
+
+#add genotype
+geno<-read.csv("genotype_frag.csv")
+df_final<-merged_df #make copy so you dont. have to keep rerunning
+
+df_final <- df_final %>%
+  left_join(geno %>% select(Frag.ID, Geno),
+            by = "Frag.ID")
+
+extra<-subset(df_final, Tank.datasheet=="Extra") #look at extra frags and then label in final df
+
+extra_ids <- unique(extra$Frag.ID)
+
+df_final <- df_final %>%
+  mutate(
+    Extra = if_else(Frag.ID %in% extra_ids, "yes", "no")
+  )
+
+#next, identify if we need those ramets. 
 
 
-merged_df <- left_join(merged_dftest, meta, by = "Frag.ID")
 
-test<-left_join(merged_dftest, well_meta, by = c("Tube" = "Tube", "DNA_plate" = "DNA_plate"))
+
 
 
 
@@ -268,4 +306,243 @@ saveWorkbook(wb, "96_well_plate_DNA_layouts_Bad.xlsx", overwrite = TRUE)
 
 
 ```
+New code below to order by plate once you
+```{r}
+
+library(tidyverse)
+library(openxlsx)
+
+# -----------------------
+# Helpers
+# -----------------------
+normalize_well <- function(x) {
+  x <- toupper(x)
+  ifelse(nchar(x) == 2, paste0(substr(x, 1, 1), "0", substr(x, 2, 2)), x)
+}
+well_levels <- paste0(rep(LETTERS[1:8], each = 12), sprintf("%02d", 1:12))
+
+# -----------------------
+# Step 1: Combine Acer and Mcap with species tracker
+# -----------------------
+Acer <- Acer %>% mutate(SpeciesGroup = "Acer")
+Mcap <- Mcap %>% mutate(SpeciesGroup = "Mcap")
+samples <- bind_rows(Acer, Mcap)
+
+# If your data sometimes uses DNA_well instead of DNAwell, coalesce here
+if (!"DNAwell" %in% names(samples) && "DNA_well" %in% names(samples)) {
+  samples <- samples %>% mutate(DNAwell = DNA_well)
+}
+
+# Normalize DNAwell to A01 format (important for matching)
+if ("DNAwell" %in% names(samples)) {
+  samples <- samples %>% mutate(DNAwell = normalize_well(DNAwell))
+}
+
+# -----------------------
+# Step 2–3: Sort, assign qPCR plates, then order by DNA source within each plate
+# -----------------------
+samples_ordered <- samples %>%
+  arrange(SpeciesGroup, Time.point) %>%
+  mutate(qPCRplate_number = ceiling(row_number() / 92)) %>%
+  group_by(qPCRplate_number) %>%
+  {
+    if ("DNAwell" %in% names(.)) {
+      arrange(., DNA_plate, factor(DNAwell, levels = well_levels), .by_group = TRUE)
+    } else {
+      arrange(., DNA_plate, .by_group = TRUE)
+    }
+  } %>%
+  ungroup()
+
+# -----------------------
+# Step 4: Controls (4 per plate)
+# -----------------------
+control_set <- tibble(
+  species = c("PCR_blank", "PCR_blank", "Mock", "DNA_blank"),
+  Tube = NA_character_,
+  Frag.ID = NA_character_,
+  Time.point = NA,
+  SpeciesGroup = "Control",
+  DNA_plate = NA_character_,
+  DNAwell = NA_character_
+)
+
+num_plates <- max(samples_ordered$qPCRplate_number, na.rm = TRUE)
+plate_controls <- map_dfr(1:num_plates, ~ control_set %>%
+                            mutate(qPCRplate_number = .x,
+                                   Frag.ID = paste(species, .x, sep = "_")))
+
+# -----------------------
+# Step 5: Combine and arrange
+# -----------------------
+final_layout <- bind_rows(samples_ordered, plate_controls) %>%
+  arrange(qPCRplate_number,
+          SpeciesGroup == "Control",  # samples first
+          DNA_plate,
+          Time.point,
+          Frag.ID)
+
+# -----------------------
+# Step 6: Assign Well positions A01–H12 within each qPCR plate
+# -----------------------
+wells <- well_levels
+final_layout <- final_layout %>%
+  group_by(qPCRplate_number) %>%
+  mutate(Well = wells[seq_len(n())]) %>%
+  ungroup()
+
+# Optional: view
+# final_layout %>% select(qPCRplate_number, Well, Tube, Frag.ID, species, Time.point, SpeciesGroup, DNA_plate, DNAwell)
+
+# ----------------------------
+# Excel 1: by Tube (prints Tube)
+# ----------------------------
+wb1 <- createWorkbook()
+plates <- sort(unique(final_layout$qPCRplate_number))
+
+for (plate in plates) {
+  plate_data <- final_layout %>% 
+    filter(qPCRplate_number == plate) %>%
+    mutate(Row = substr(Well, 1, 1),
+           Column = as.integer(substr(Well, 2, 3))) %>%
+    select(Row, Column, Tube)
+
+  plate_matrix <- matrix(NA_character_, nrow = 8, ncol = 12,
+                         dimnames = list(LETTERS[1:8], as.character(1:12)))
+
+  for (i in seq_len(nrow(plate_data))) {
+    r <- plate_data$Row[i]
+    c <- plate_data$Column[i]
+    plate_matrix[r, as.character(c)] <- plate_data$Tube[i]
+  }
+
+  plate_df <- as.data.frame(plate_matrix) %>%
+    tibble::rownames_to_column(var = "Row")
+
+  addWorksheet(wb1, paste0("Plate_", plate, "_byTUBE"))
+  writeData(wb1, sheet = paste0("Plate_", plate, "_byTUBE"), plate_df)
+}
+
+saveWorkbook(wb1, "96_well_plate_layouts_byTUBE.xlsx", overwrite = TRUE)
+
+# ---------------------------------------------
+# Excel 2: by DNA plate + DNAwell (controls blank)
+# ---------------------------------------------
+wb2 <- createWorkbook()
+
+for (plate in plates) {
+  plate_data <- final_layout %>% 
+    filter(qPCRplate_number == plate) %>%
+    mutate(
+      Row = substr(Well, 1, 1),
+      Column = as.integer(substr(Well, 2, 3)),
+      Combined = if_else(!is.na(DNA_plate) & !is.na(DNAwell),
+                         paste0(DNA_plate, "_", DNAwell), "")
+    ) %>%
+    select(Row, Column, Combined)
+
+  plate_matrix <- matrix(NA_character_, nrow = 8, ncol = 12,
+                         dimnames = list(LETTERS[1:8], as.character(1:12)))
+
+  for (i in seq_len(nrow(plate_data))) {
+    r <- plate_data$Row[i]
+    c <- plate_data$Column[i]
+    plate_matrix[r, as.character(c)] <- plate_data$Combined[i]
+  }
+
+  plate_df <- as.data.frame(plate_matrix) %>%
+    tibble::rownames_to_column(var = "Row")
+
+  addWorksheet(wb2, paste0("Plate_", plate, "_byDNA"))
+  writeData(wb2, sheet = paste0("Plate_", plate, "_byDNA"), plate_df)
+}
+
+saveWorkbook(wb2, "96_well_plate_DNA_layouts.xlsx", overwrite = TRUE)
+
+# ---------------------------------------------
+# Optional QC workbook (per-well crosscheck table)
+# ---------------------------------------------
+# wb3 <- createWorkbook()
+# for (plate in plates) {
+#   cross <- final_layout %>%
+#     filter(qPCRplate_number == plate) %>%
+#     transmute(
+#       qPCRplate_number,
+#       Well,
+#       Tube,
+#       Frag.ID,
+#       DNA_plate,
+#       DNAwell,
+#       DNA_combo = if_else(!is.na(DNA_plate) & !is.na(DNAwell),
+#                           paste0(DNA_plate, "_", DNAwell), "")
+#     ) %>%
+#     arrange(Well)
+#   addWorksheet(wb3, paste0("Plate_", plate, "_crosscheck"))
+#   writeData(wb3, paste0("Plate_", plate, "_crosscheck"), cross)
+# }
+# saveWorkbook(wb3, "qPCR_layout_crosscheck.xlsx", overwrite = TRUE)
+
+```
+
+MiSeq
+```{r}
+MiSeq<-read.csv("GT23 sample order.csv")
+
+library(dplyr)
+
+library(dplyr)
+
+# Create a column in samples that matches the MiSeq Sample.name format
+samples <- samples %>%
+  mutate(Sample.name = paste(DNA_plate, DNAwell, sep = "_"))
+
+library(dplyr)
+
+# Make sure the matching key exists and is formatted correctly in samples
+samples_key <- samples %>%
+  mutate(Sample.name = paste(DNA_plate, DNAwell, sep = "_")) %>%
+  select(Sample.name, Tube) %>%
+  distinct()   # ensure no duplicates
+
+# Join Tube info into MiSeq; unmatched rows stay with NA
+MiSeq <- MiSeq %>%
+  left_join(samples_key, by = "Sample.name")
+write.csv(MiSeq, "MiSeq.csv")
+```
+
+Find samples for each genotype:
+```{r}
+df_final <- df_final %>%
+  filter(!Tube %in% c(267, 227))
+
+df_day0 <- df_final %>%
+  filter(Time.point == "Day 0")
+
+
+write.csv(df_day0, "df_day0.csv")
+
+trinity<-read.csv("trinity.csv")
+
+rows <- LETTERS[1:8]
+cols <- 1:12
+
+plate_layout <- expand.grid(Row = rows, Col = cols) %>%
+  mutate(Well = paste0(Row, Col)) %>%
+  arrange(Row, Col)
+
+library(dplyr)
+library(purrr)
+
+df_list <- trinity %>%
+  split(.$Frag.ID) %>%    # splits into a list per Frag.ID
+  map(~ plate_layout %>%
+        left_join(.x %>% select(DNA_plateN, DNAwell),
+                  by = c("Well" = "DNAwell")))
+
+
+
+iwalk(df_list, ~ write.csv(.x, paste0("plate_", .y, ".csv"), row.names = FALSE))
+
+```
+
 
