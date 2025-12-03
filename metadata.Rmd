@@ -17,7 +17,6 @@ library(openxlsx)
 
 ```
 
-## R Markdown
 ```{r}
 
 bag.loc<-read.csv("metadata for bags.csv") #cols: fragid and tank location
@@ -107,24 +106,28 @@ df_final <- df_final %>%
     Extra = if_else(Frag.ID %in% extra_ids, "yes", "no")
   )
 
-#next, identify if we need those ramets. 
+
+#save metadata for Phyloseq
+write.csv(df_final,"df_final.csv")
 
 
 
+```
 
 
 
-
+# This is for making the qPCR plate layouts for ONLY Mcap and Acer
+```{r}
 #these include the antibiotics. they do not include sterivex
 
 #create ACER subset: 
-Acer<-subset(test, species=="Acer") #355 samples
+Acer<-subset(merged_df, species=="Acer") #355 samples
 Acer<-subset(Acer, Time.point!="Week 3") # Remove week 3, 306 samples
 Acer<-subset(Acer, Tank.datasheet!="Extra") #remove extras, 295 samples
 Acer<-subset(Acer, Notes!="Before moving to Quad") #remove extras, 287 samples
 
 #create MCAP subset: 345 samples
-Mcap<-subset(test, species=="Mcap") #345 samps
+Mcap<-subset(merged_df, species=="Mcap") #345 samps
 Mcap<-subset(Mcap, Time.point!="Week 3") # remove week 3 292 samples
 Mcap<-subset(Mcap, Tank.datasheet!="Extra") #remove extras, 280 samples
 Mcap<-subset(Mcap, Notes!="Before moving to Quad") #remove extras, 280 samples
