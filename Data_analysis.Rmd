@@ -1,0 +1,119 @@
+---
+title: "Data_analysis"
+author: "Shayle Matsuda"
+date: "2025-12-02"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+Load Libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(ggplot2)
+
+library(lmerTest)
+library(car)
+library(emmeans)
+
+library(vegan) 
+library(pairwiseAdonis)
+
+library(phyloseq)
+
+library(microbiome)  
+library(tidyverse)
+```
+
+Load data and Clean up
+```{r}
+load("RData/Bac.3k.RData")
+Bac.seq
+sampdata <- as(sample_data(Bac.seq), "data.frame") #look at samp data
+
+Bac.seq<-subset_samples(Bac.seq, Type=="sample") #filter out only samples
+sd <- as(sample_data(Bac.seq), "data.frame") #look at samp data, n=248
+
+Bac.seq.ACER<-subset_samples(Bac.seq, species.x=="Acer")
+sd.ACER <- as(sample_data(Bac.seq.ACER), "data.frame") #look at samp data, n=248
+
+#Make rel abund df
+Bac.seq.rel  = transform_sample_counts(Bac.seq.ACER, function(x) x / sum(x) )  #save as RELA DIVs
+Bac.seq.rel.sd <- as(sample_data(Bac.seq.rel), "data.frame") #look at samp data
+Bac.seq.rel = prune_taxa(taxa_sums(Bac.seq.rel) > 0, Bac.seq.rel) #this removes any OTU with 0s
+```
+
+Bar plots
+```{r}
+df <- phyloseq::psmelt(Bac.seq.rel)
+
+
+df$Date <- as.Date(as.character(df$Date), format = "%m/%d/%y")
+df <- df %>%
+  dplyr::arrange(Date) %>%
+  dplyr::mutate(Date = factor(Date, levels = unique(Date)))
+
+df_avg <- df %>%
+  dplyr::group_by(Geno, tank.x, Date, Family) %>%
+  dplyr::summarise(Abundance = mean(Abundance), .groups = "drop")
+
+
+ggplot(df, aes(x = Geno, y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity", width = 1) +
+  facet_wrap(~ tank.x, scales = "free_x") +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    strip.background = element_rect(fill = "white"),
+    panel.spacing = unit(1, "lines")
+  ) +
+  ylab("Relative Abundance") +
+  xlab("Sample")
+
+
+plots_by_geno <- df_avg %>%
+  split(.$Geno) %>%
+  imap(function(Date, geno_name) {
+    ggplot(Date, aes(x = Date, y = Abundance, fill = Family)) +
+      geom_bar(stat = "identity") +
+      facet_wrap(~ tank.x, scales = "free_x") +
+      theme_bw() +
+      theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)
+      ) +
+      ylab("Relative Abundance") +
+      xlab("Date") +
+      ggtitle(paste("Genotype:", geno_name))
+  });plots_by_geno
+
+# Create a folder to store PDFs (optional)
+dir.create("plots_family", showWarnings = FALSE)
+
+# Loop and save each plot using genotype name + "Family"
+for(geno_name in names(plots_by_geno)) {
+  
+  pdf(file = paste0("plots_family/", geno_name, "_Family.pdf"),
+      width = 8, height = 6)   # adjust size if needed
+  
+  print(plots_by_geno[[geno_name]])
+  
+  dev.off()
+}
+```
+
+
+Top 10 otus
+```{r}
+#
+
+
+
+
+```
+
