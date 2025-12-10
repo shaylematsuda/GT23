@@ -25,6 +25,7 @@ library(vegan)
 library(pairwiseAdonis)
 
 library(phyloseq)
+library(plyr)
 
 library(microbiome)  
 library(tidyverse)
@@ -46,6 +47,7 @@ sd.ACER <- as(sample_data(Bac.seq.ACER), "data.frame") #look at samp data, n=248
 Bac.seq.rel  = transform_sample_counts(Bac.seq.ACER, function(x) x / sum(x) )  #save as RELA DIVs
 Bac.seq.rel.sd <- as(sample_data(Bac.seq.rel), "data.frame") #look at samp data
 Bac.seq.rel = prune_taxa(taxa_sums(Bac.seq.rel) > 0, Bac.seq.rel) #this removes any OTU with 0s
+
 ```
 
 Bar plots
@@ -59,27 +61,16 @@ df <- df %>%
   dplyr::mutate(Date = factor(Date, levels = unique(Date)))
 
 df_avg <- df %>%
-  dplyr::group_by(Geno, tank.x, Date, Family) %>%
+  dplyr::group_by(Geno, tank.x, Date, Genus) %>%
   dplyr::summarise(Abundance = mean(Abundance), .groups = "drop")
 
 
-ggplot(df, aes(x = Geno, y = Abundance, fill = Family)) +
-  geom_bar(stat = "identity", width = 1) +
-  facet_wrap(~ tank.x, scales = "free_x") +
-  theme(
-    legend.position = "none",
-    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
-    strip.background = element_rect(fill = "white"),
-    panel.spacing = unit(1, "lines")
-  ) +
-  ylab("Relative Abundance") +
-  xlab("Sample")
 
 
 plots_by_geno <- df_avg %>%
   split(.$Geno) %>%
   imap(function(Date, geno_name) {
-    ggplot(Date, aes(x = Date, y = Abundance, fill = Family)) +
+    ggplot(Date, aes(x = Date, y = Abundance, fill = Genus)) +
       geom_bar(stat = "identity") +
       facet_wrap(~ tank.x, scales = "free_x") +
       theme_bw() +
@@ -98,22 +89,351 @@ dir.create("plots_family", showWarnings = FALSE)
 # Loop and save each plot using genotype name + "Family"
 for(geno_name in names(plots_by_geno)) {
   
-  pdf(file = paste0("plots_family/", geno_name, "_Family.pdf"),
+  pdf(file = paste0("plots_family/", geno_name, "_Genus.pdf"),
       width = 8, height = 6)   # adjust size if needed
   
   print(plots_by_geno[[geno_name]])
   
   dev.off()
 }
+
+# plots by tank ####
+
+# Agglomerate to family (change taxrank if needed)
+ps_fam <- tax_glom(Bac.seq.rel, taxrank = "Family")
+
+
+# Melt to long data frame
+df_plot <- psmelt(ps_fam)
+
+# Make Date an actual date if it isn’t
+df_plot$Date <- as.Date(df_plot$Date, format = "%m/%d/%y")  # adjust format if needed
+
+# Sort Dates if you want (optional)
+df_plot <- df_plot %>% arrange(Date)
+
+# Plot
+ggplot(df_plot, aes(x = Date, y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ tank.x, scales = "free_x") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.spacing = unit(1, "lines")
+  ) +
+  labs(
+    x = "Date",
+    y = "Relative Abundance",
+    title = "Community Composition by Date, Faceted by Tank"
+  )
+
+library(dplyr)
+
+df_plot_sum <- df_plot %>%
+  group_by(tank.x, Date, Family) %>%        # <-- tank.x included here
+  dplyr::summarise(
+    Abundance = mean(Abundance),
+    .groups = "drop"
+  )
+
+ggplot(df_plot_sum, aes(x = Date, y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ tank.x, scales = "free_x") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.spacing = unit(1, "lines")
+  ) +
+  labs(
+    x = "Date",
+    y = "Relative Abundance",
+    title = "Community Composition by Date, Faceted by Tank"
+  )
+
 ```
 
 
-Top 10 otus
+Top 10 otus: Phyla, Fam, Genus
 ```{r}
 #
+# Selecting top 10 OTUs
+TopNOTUs = names(sort(taxa_sums(Bac.seq.rel), TRUE)[1:10])
+acer.abund = prune_taxa(TopNOTUs, Bac.seq.rel)
+acer.abund.melt <- psmelt(acer.abund)
+acer.abund.melt$top.group <- "abund"
+acer.abund.melt$Date <- as.Date(acer.abund.melt$Date, format = "%m/%d/%y")
+acer.abund.melt <- acer.abund.melt %>%
+  arrange(Date)
+#write.csv(acer.abund.melt, "outputs/acer_abund.csv")
+
+acer.list <- unique(acer.abund.melt$Genus) #tops
+
+#Genus
+sum <- ddply(acer.abund.melt, c( "tank.x", "Date", "Genus"), summarise,
+             N = length(Abundance), 
+             mean = mean(Abundance),
+             sd = sd(Abundance), 
+             se = sd/sqrt(N)
+)
+
+pal <- c(
+  "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
+  "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
+  "#393B79", "#637939", "#8C6D31", "#843C39", "#7B4173",
+  "#A55194", "#396AB1", "#DA7C30", "#3E9651", "#CC2529"
+)
+
+ggplot(sum, aes(x = Date, y = mean, group = Genus, color = Genus)) +
+  geom_point(alpha = 0.5, size = 3) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                alpha = 0.5, width = 0) +
+  geom_line(alpha = 0.5) +
+  scale_color_manual(values = pal) +     # <--- use color, not fill
+  ylab("Mean Relative Abundance\n") +
+  xlab("\nDate") +                       # x is Date here, not Treatment
+  labs(color = "OTU Genus") +
+  theme_bw() +
+  facet_wrap(~ tank.x)
+
+ggsave(filename = "outputs/acer_treatment_by_abund.pdf", plot = last_plot())
+
+#Phylum
+sum <- ddply(acer.abund.melt, c( "tank.x", "Date", "Phylum"), summarise,
+             N = length(Abundance), 
+             mean = mean(Abundance),
+             sd = sd(Abundance), 
+             se = sd/sqrt(N)
+)
+
+ggplot(sum, aes(x = Date, y = mean, group = Phylum, color = Phylum)) +
+  geom_point(alpha = 0.5, size = 3) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                alpha = 0.5, width = 0) +
+  geom_line(alpha = 0.5) +
+  scale_color_manual(values = pal) +     # <--- use color, not fill
+  ylab("Mean Relative Abundance\n") +
+  xlab("\nDate") +                       # x is Date here, not Treatment
+  labs(color = "OTU Phylum") +
+  theme_bw() +
+  facet_wrap(~ tank.x)
+
+ggsave(filename = "outputs/acer_treatment_by_abund_phy.pdf", plot = last_plot())
 
 
+#Family
+sum <- ddply(acer.abund.melt, c( "tank.x", "Date", "Family"), summarise,
+             N = length(Abundance), 
+             mean = mean(Abundance),
+             sd = sd(Abundance), 
+             se = sd/sqrt(N)
+)
 
+ggplot(sum, aes(x = Date, y = mean, group = Family, color = Family)) +
+  geom_point(alpha = 0.5, size = 3) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                alpha = 0.5, width = 0) +
+  geom_line(alpha = 0.5) +
+  scale_color_manual(values = pal) +     # <--- use color, not fill
+  ylab("Mean Relative Abundance\n") +
+  xlab("\nDate") +                       # x is Date here, not Treatment
+  labs(color = "OTU Phylum") +
+  theme_bw() +
+  facet_wrap(~ tank.x)
+
+ggsave(filename = "outputs/acer_treatment_by_abund_fam.pdf", plot = last_plot())
+
+
+########### Remake plots without MD3-55 to see trends
+sum.no.MD3 <- sum %>% 
+  filter(Genus != "MD3-55")
+
+ggplot(sum.no.MD3, aes(x = Date, y = mean, group = Genus, color = Genus)) +
+  geom_point(alpha = 0.7, size = 3) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                alpha = 0.6, width = 0) +
+  geom_line(alpha = 0.7) +
+  scale_color_manual(values = pal) +
+  ylab("Mean Relative Abundance (excluding MD3-55)\n") +
+  xlab("\nDate") +
+  labs(color = "OTU Genus") +
+  theme_bw() +
+  facet_wrap(~ tank.x)
+
+ggsave(filename = "outputs/acer_treatment_by_abund_gen_noMD3.pdf", plot = last_plot())
+
+#Fam
+sum.no.MD3 <- sum %>% 
+  filter(Family != "Midichloriaceae")
+
+ggplot(sum.no.MD3, aes(x = Date, y = mean, group = Family, color = Family)) +
+  geom_point(alpha = 0.7, size = 3) +
+  geom_errorbar(aes(ymin = mean - se, ymax = mean + se),
+                alpha = 0.6, width = 0) +
+  geom_line(alpha = 0.7) +
+  scale_color_manual(values = pal) +
+  ylab("Mean Relative Abundance (excluding MD3-55)\n") +
+  xlab("\nDate") +
+  labs(color = "OTU Genus") +
+  theme_bw() +
+  facet_wrap(~ tank.x)
+
+ggsave(filename = "outputs/acer_treatment_by_abund_fam_noMD3.pdf", plot = last_plot())
 
 ```
+
+NMDS
+```{r}
+#make unifrac matrix
+Bac.seq.rel.wu <- phyloseq::distance(Bac.seq.rel, method = "wunifrac")
+Bac.seq.rel.wu.df <- as(sample_data(Bac.seq.rel), "data.frame") #sample df
+
+#adonis
+set.seed(30)
+adonis2(Bac.seq.rel.wu ~ Date, data = Bac.seq.rel.wu.df) # p=0.001
+
+set.seed(30)
+adonis2(Bac.seq.rel.wu ~ tank.x, data = Bac.seq.rel.wu.df) # p=0.009
+
+set.seed(30)
+adonis2(Bac.seq.rel.wu ~ Geno, data = Bac.seq.rel.wu.df) # p=0.001
+
+set.seed(30)
+adonis2(
+  Bac.seq.rel.wu ~ Geno + Date + Geno:Date,
+  data = Bac.seq.rel.wu.df,
+  permutations = 999,
+  by = "terms"
+)
+
+#interactions: marginal (partial) sums of squares method
+adonis2(
+  Bac.seq.rel.wu ~ Date * tank.x * Geno,
+  data = Bac.seq.rel.wu.df,
+  by = "margin"
+)
+
+adonis2(
+  Bac.seq.rel.wu ~ Geno + Date * tank.x,
+  data = Bac.seq.rel.wu.df,
+  by = "margin"
+)
+
+# test Date within each tank - p>0.05 so within tanks nothing changes over time ####
+# make sure rownames are right
+stopifnot(all(attr(Bac.seq.rel.wu, "Labels") == rownames(Bac.seq.rel.wu.df)))
+
+tank_idx_list <- split(seq_len(nrow(Bac.seq.rel.wu.df)), Bac.seq.rel.wu.df$tank.x)
+
+res_by_tank <- lapply(tank_idx_list, function(idx) {
+  # subset distance matrix to those samples
+  dist_sub <- as.dist(as.matrix(Bac.seq.rel.wu)[idx, idx])
+
+  # subset metadata
+  meta_sub <- Bac.seq.rel.wu.df[idx, , drop = FALSE]
+
+  adonis2(dist_sub ~ Date, data = meta_sub)
+})
+
+res_by_tank
+
+# test Date within each Geno - Genotype Y27 is the only one p=0.001, 
+
+geno_idx_list <- split(seq_len(nrow(Bac.seq.rel.wu.df)), Bac.seq.rel.wu.df$Geno)
+
+res_by_geno <- lapply(geno_idx_list, function(idx) {
+  dist_sub <- as.dist(as.matrix(Bac.seq.rel.wu)[idx, idx])
+  meta_sub <- Bac.seq.rel.wu.df[idx, , drop = FALSE]
+  adonis2(dist_sub ~ Date, data = meta_sub)
+})
+
+res_by_geno
+
+##### Ok let's try again with date as numeric (above it adonis makes it categorical)####
+Bac.seq.rel.wu.df$Date <- as.Date(Bac.seq.rel.wu.df$Date, format="%m/%d/%y")
+
+Bac.seq.rel.wu.df$DayNum <- as.numeric(Bac.seq.rel.wu.df$Date) -
+                             min(as.numeric(Bac.seq.rel.wu.df$Date))
+
+#1) db-RDA (distance-based redundancy analysis) Uses genotype/tank as covariates, time as numeric:
+cap <- capscale(Bac.seq.rel.wu ~ DayNum + Condition(Geno) + Condition(tank.x),
+                data = Bac.seq.rel.wu.df)
+anova(cap) # p=0.009
+
+
+#2) NMDS axis regression 
+library(vegan)
+
+# 1. Run the NMDS
+nmds <- metaMDS(Bac.seq.rel.wu)
+
+# 2. Get site scores explicitly from vegan, and don't call the object 'scores'
+site.scores <- vegan::scores(nmds, display = "sites")
+
+# 3. Put into a data.frame with your DayNum
+df_nmds <- data.frame(
+  MDS1   = site.scores[, 1],
+  MDS2   = site.scores[, 2],
+  DayNum = Bac.seq.rel.wu.df$DayNum
+)
+
+# 4. Regress MDS1 on time
+m1 <- lm(MDS1 ~ DayNum, data = df_nmds)
+anova(m1) # p=0.0133
+summary(m1) # see notes
+
+
+## Do this for JUST the significant genotype Y27
+idx_Y27 <- Bac.seq.rel.wu.df$Geno == "Y27"
+
+dist_Y27 <- as.dist(as.matrix(Bac.seq.rel.wu)[idx_Y27, idx_Y27])
+meta_Y27 <- Bac.seq.rel.wu.df[idx_Y27, , drop = FALSE]
+
+nmds_Y27 <- metaMDS(dist_Y27)
+site.scores_Y27 <- vegan::scores(nmds_Y27, display = "sites")
+
+df_Y27 <- data.frame(
+  MDS1   = site.scores_Y27[,1],
+  MDS2   = site.scores_Y27[,2],
+  DayNum = meta_Y27$DayNum
+)
+
+m_Y27 <- lm(MDS1 ~ DayNum, data = df_Y27)
+anova(m_Y27)
+summary(m_Y27)
+
+
+m_Y27 <- lm(MDS1 ~ DayNum, data = df_Y27)
+anova(m_Y27)
+summary(m_Y27)
+
+
+
+# Homogeneity of dispersion test  -
+bd <- betadisper(Bac.seq.rel.wu, Bac.seq.rel.wu.df$Date)
+anova(bd)            # significance test
+TukeyHSD(bd)         # which dates differ
+
+
+# index for Y27 only
+idx_Y27 <- Bac.seq.rel.wu.df$Geno == "Y27"
+
+dist_Y27 <- as.dist(as.matrix(Bac.seq.rel.wu)[idx_Y27, idx_Y27])
+meta_Y27 <- Bac.seq.rel.wu.df[idx_Y27, , drop = FALSE]
+
+# betadisper for Y27 only NON SIG
+bd_Y27 <- betadisper(dist_Y27, meta_Y27$Date)
+anova(bd_Y27)   #p >0.05
+TukeyHSD(bd_Y27)
+
+plot(bd_Y27, hull=FALSE)
+boxplot(bd_Y27)
+
+```
+
+Time-point explained microbial compositional variation when tested alone (adonis2; R² = 0.126, p = 0.001). However, when genotype and tank were included as covariates, the marginal effect of time was no longer detectable, indicating that temporal shifts differ among genotypes and/or tank environments rather than representing a uniform or global temporal trend (adonis2; p > 0.05; Type II model).
+
+There are microbiome changes over time.Those changes depend on genotype/tank structure, so they are not globally consistent.
+Time explains variation, but that time effect is structured — not homogeneous — across genotypes/tanks.
+
+
 

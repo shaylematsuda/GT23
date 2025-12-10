@@ -62,7 +62,7 @@ Issue<- md %>%
   filter(n > 1)
 #write.csv(Issue, "Issue.csv") 
 
-#Fix duplicates (most samples duplicated dates, confirmed on written datesheets )
+#Fix duplicates (most samples duplicated dates -not real-, confirmed on written datesheets )
 tubes_to_remove <- c(
   1454,1456,1458,1459,1464,1465,1467,1468,1469,1470,
   1471,1472,1473,1475,1478,1480,1481,1483,1486,1487,
@@ -135,30 +135,76 @@ phy_tree(Bac.seq) <- treefile
 Bac.seq
 
 #Save before QC if needed
-save(Bac.seq, file = "RData/Bac.seq.RData")
+#save(Bac.seq, file = "RData/Bac.seq.RData")
 
+# 
+# # Check sample names for the OTU table
+# otu_names <- rownames(otu) 
+# 
+# # Check sample names for the sample data
+# sam_names <- rownames(sam)
+# 
+# # Check taxonomy table row names (these are typically OTU IDs, not sample names)
+# tax_ids <- rownames(tax) 
+# 
+# # Compare them
+# print(paste("Number of samples in OTU table:", length(otu_names)))
+# print(paste("Number of samples in Sample Data:", length(sam_names)))
+# 
+# # Find the differences
+# # Samples in OTU that are missing in SAM
+# missing_in_sam <- setdiff(otu_names, sam_names)
+# print(paste("Samples in OTU but not in SAM:", toString(missing_in_sam)))
+# 
+# # Samples in SAM that are missing in OTU
+# missing_in_otu <- setdiff(sam_names, otu_names)
+# print(paste("Samples in SAM but not in OTU:", toString(missing_in_otu)))
+# 
 
-# Check sample names for the OTU table
-otu_names <- rownames(otu) 
+#look at dups
+sd <- as(sample_data(Bac.seq), "data.frame")
+## 2. Find duplicated Sample_IDs
+dup_ids <- sd$Tube[duplicated(sd$Tube)]
+dup_ids <- unique(dup_ids)  # keep each duplicated ID once
 
-# Check sample names for the sample data
-sam_names <- rownames(sam)
+dup_ids
+# This shows which Sample_IDs have duplicates
 
-# Check taxonomy table row names (these are typically OTU IDs, not sample names)
-tax_ids <- rownames(tax) 
+## (Optional) Inspect the duplicated samples in the metadata
+sd_dups <- sd %>% 
+  filter(Tube %in% dup_ids)
 
-# Compare them
-print(paste("Number of samples in OTU table:", length(otu_names)))
-print(paste("Number of samples in Sample Data:", length(sam_names)))
+sd_dups
 
-# Find the differences
-# Samples in OTU that are missing in SAM
-missing_in_sam <- setdiff(otu_names, sam_names)
-print(paste("Samples in OTU but not in SAM:", toString(missing_in_sam)))
+## 3. Subset the phyloseq object to only duplicated samples
+ps_dups <- subset_samples(Bac.seq, Tube %in% dup_ids)
 
-# Samples in SAM that are missing in OTU
-missing_in_otu <- setdiff(sam_names, otu_names)
-print(paste("Samples in SAM but not in OTU:", toString(missing_in_otu)))
+ps_dups
+
+seq_counts <- sample_sums(ps_dups)
+
+seq_counts #most will get filtered out (1174, 1194, 1218, 538)
+
+# Agglomerate at a taxonomic rank (change "Family" if needed)
+ps_dups_fam <- tax_glom(ps_dups, taxrank = "Family")
+
+# Transform to relative abundance
+ps_dups_fam_rel <- transform_sample_counts(ps_dups_fam, function(x) x / sum(x))
+
+# Melt to long format
+df_plot <- psmelt(ps_dups_fam_rel)
+
+# If Sample_ID is your x-axis grouping variable:
+ggplot(df_plot, aes(x = Sample_ID, y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Sample", y = "Relative Abundance", title = "Duplicated Samples") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.spacing = unit(1, "lines")
+  )
+
+#Tube 480 both are similar, Tube 436dup looks uncharictaristically different, cut.  
 ```
 
 QC:
@@ -230,6 +276,9 @@ lost_counts2 <- reads_df %>%
 
 ### Rerun doing subsampling at 3000 for ACER
 # Mcap is pretty bad. a 2k subset would only leave 91, and 3k 77
+
+sample.data.mcap<-subset(sample.data, species.x=="Mcap")
+write.csv(sample.data.mcap, "sample.data.mcap.csv")
 ```
 
 ## START HERE for ACER subset to 3000
@@ -273,8 +322,62 @@ treefile<- read.tree("3k_16S-pipeline_outputs/Results/postprocessing/unifrac/Fas
 phy_tree(Bac.seq) <- treefile
 Bac.seq
 
+
+
+```
+Examine dups
+```{r}
+sd <- as(sample_data(Bac.seq), "data.frame")
+## 2. Find duplicated Sample_IDs
+dup_ids <- sd$Tube[duplicated(sd$Tube)]
+dup_ids <- unique(dup_ids)  # keep each duplicated ID once
+
+dup_ids
+# This shows which Sample_IDs have duplicates
+
+## (Optional) Inspect the duplicated samples in the metadata
+sd_dups <- sd %>% 
+  filter(Tube %in% dup_ids)
+
+sd_dups
+
+## 3. Subset the phyloseq object to only duplicated samples
+ps_dups <- subset_samples(Bac.seq, Tube %in% dup_ids)
+
+ps_dups
+
+seq_counts <- sample_sums(ps_dups)
+
+seq_counts
+
+# Agglomerate at a taxonomic rank (change "Family" if needed)
+ps_dups_fam <- tax_glom(ps_dups, taxrank = "Family")
+
+# Transform to relative abundance
+ps_dups_fam_rel <- transform_sample_counts(ps_dups_fam, function(x) x / sum(x))
+
+# Melt to long format
+df_plot <- psmelt(ps_dups_fam_rel)
+
+# If Sample_ID is your x-axis grouping variable:
+ggplot(df_plot, aes(x = Sample_ID, y = Abundance, fill = Family)) +
+  geom_bar(stat = "identity") +
+  labs(x = "Sample", y = "Relative Abundance", title = "Duplicated Samples") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    panel.spacing = unit(1, "lines")
+  )
+
+#Tube 480 both are similar, Tube 436dup looks wonky, drop 
+
+Bac.seq<-subset_samples(Bac.seq, Sample_ID!="436dup")
+Bac.seq<-subset_samples(Bac.seq, Sample_ID!="480dup")
+Bac.seq
+```
+Save file
+```{r}
 #Save before QC if needed
 save(Bac.seq, file = "RData/Bac.3k.RData")
-
 ```
 
