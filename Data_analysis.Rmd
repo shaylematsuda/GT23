@@ -27,6 +27,10 @@ library(pairwiseAdonis)
 library(phyloseq)
 library(plyr)
 
+library(viridis)
+library(lme4)
+library(lmerTest)
+
 library(microbiome)  
 library(tidyverse)
 ```
@@ -35,19 +39,27 @@ Load data and Clean up
 ```{r}
 load("RData/Bac.3k.RData")
 Bac.seq
-sampdata <- as(sample_data(Bac.seq), "data.frame") #look at samp data
 
 Bac.seq<-subset_samples(Bac.seq, Type=="sample") #filter out only samples
-sd <- as(sample_data(Bac.seq), "data.frame") #look at samp data, n=248
+sd <- as(sample_data(Bac.seq), "data.frame") #look at samp data, n=245
 
 Bac.seq.ACER<-subset_samples(Bac.seq, species.x=="Acer")
-sd.ACER <- as(sample_data(Bac.seq.ACER), "data.frame") #look at samp data, n=248
+sd.ACER <- as(sample_data(Bac.seq.ACER), "data.frame") #look at samp data
+
+Bac.seq.ACER<-subset_samples(Bac.seq.ACER, Date!="5/16/23") #remove antibac T0 samps
+sd.ACER <- as(sample_data(Bac.seq.ACER), "data.frame") #look at samp data, n=206
+
 
 #Make rel abund df
 Bac.seq.rel  = transform_sample_counts(Bac.seq.ACER, function(x) x / sum(x) )  #save as RELA DIVs
 Bac.seq.rel.sd <- as(sample_data(Bac.seq.rel), "data.frame") #look at samp data
 Bac.seq.rel = prune_taxa(taxa_sums(Bac.seq.rel) > 0, Bac.seq.rel) #this removes any OTU with 0s
-
+Bac.seq.rel.sd$Tube<-as.numeric(Bac.seq.rel.sd$Tube)
+#number of samples/treat/time
+num<-Bac.seq.rel.sd %>%
+  dplyr::count(tank.x, Date) %>%
+  arrange(tank.x, Date)
+#write.csv(num, "acer samp per treat time.csv")
 ```
 
 Bar plots
@@ -152,7 +164,6 @@ ggplot(df_plot_sum, aes(x = Date, y = Abundance, fill = Family)) +
 
 ```
 
-
 Top 10 otus: Phyla, Fam, Genus
 ```{r}
 #
@@ -195,7 +206,7 @@ ggplot(sum, aes(x = Date, y = mean, group = Genus, color = Genus)) +
   theme_bw() +
   facet_wrap(~ tank.x)
 
-ggsave(filename = "outputs/acer_treatment_by_abund.pdf", plot = last_plot())
+#ggsave(filename = "outputs/acer_treatment_by_abund.pdf", plot = last_plot())
 
 #Phylum
 sum <- ddply(acer.abund.melt, c( "tank.x", "Date", "Phylum"), summarise,
@@ -217,7 +228,7 @@ ggplot(sum, aes(x = Date, y = mean, group = Phylum, color = Phylum)) +
   theme_bw() +
   facet_wrap(~ tank.x)
 
-ggsave(filename = "outputs/acer_treatment_by_abund_phy.pdf", plot = last_plot())
+#ggsave(filename = "outputs/acer_treatment_by_abund_phy.pdf", plot = last_plot())
 
 
 #Family
@@ -236,11 +247,11 @@ ggplot(sum, aes(x = Date, y = mean, group = Family, color = Family)) +
   scale_color_manual(values = pal) +     # <--- use color, not fill
   ylab("Mean Relative Abundance\n") +
   xlab("\nDate") +                       # x is Date here, not Treatment
-  labs(color = "OTU Phylum") +
+  labs(color = "OTU Family") +
   theme_bw() +
   facet_wrap(~ tank.x)
 
-ggsave(filename = "outputs/acer_treatment_by_abund_fam.pdf", plot = last_plot())
+#ggsave(filename = "outputs/acer_treatment_by_abund_fam.pdf", plot = last_plot())
 
 
 ########### Remake plots without MD3-55 to see trends
@@ -259,7 +270,7 @@ ggplot(sum.no.MD3, aes(x = Date, y = mean, group = Genus, color = Genus)) +
   theme_bw() +
   facet_wrap(~ tank.x)
 
-ggsave(filename = "outputs/acer_treatment_by_abund_gen_noMD3.pdf", plot = last_plot())
+#ggsave(filename = "outputs/acer_treatment_by_abund_gen_noMD3.pdf", plot = last_plot())
 
 #Fam
 sum.no.MD3 <- sum %>% 
@@ -273,51 +284,115 @@ ggplot(sum.no.MD3, aes(x = Date, y = mean, group = Family, color = Family)) +
   scale_color_manual(values = pal) +
   ylab("Mean Relative Abundance (excluding MD3-55)\n") +
   xlab("\nDate") +
-  labs(color = "OTU Genus") +
+  labs(color = "OTU Family") +
   theme_bw() +
   facet_wrap(~ tank.x)
 
-ggsave(filename = "outputs/acer_treatment_by_abund_fam_noMD3.pdf", plot = last_plot())
+#ggsave(filename = "outputs/acer_treatment_by_abund_fam_noMD3.pdf", plot = last_plot())
 
 ```
 
-NMDS
+PERMANOVA All times
 ```{r}
 #make unifrac matrix
 Bac.seq.rel.wu <- phyloseq::distance(Bac.seq.rel, method = "wunifrac")
 Bac.seq.rel.wu.df <- as(sample_data(Bac.seq.rel), "data.frame") #sample df
 
 #adonis
-set.seed(30)
-adonis2(Bac.seq.rel.wu ~ Date, data = Bac.seq.rel.wu.df) # p=0.001
+set.seed(30) #~Date
+adonis2(Bac.seq.rel.wu ~ Date, data = Bac.seq.rel.wu.df) # p=0.04
 
-set.seed(30)
-adonis2(Bac.seq.rel.wu ~ tank.x, data = Bac.seq.rel.wu.df) # p=0.009
+set.seed(30)  #~Tank Treatment
+adonis2(Bac.seq.rel.wu ~ tank.x, data = Bac.seq.rel.wu.df) # p=0.017
 
-set.seed(30)
+set.seed(30)  #~Genotype
 adonis2(Bac.seq.rel.wu ~ Geno, data = Bac.seq.rel.wu.df) # p=0.001
 
+#1 Does tank explain microbiome differences overall? Significant
+#Ignoring Date, controling for genotype
+set.seed(30)  #~Genotype + Tank, under a reduced model.  
+adonis2(Bac.seq.rel.wu ~ Geno + tank.x,data = Bac.seq.rel.wu.df,by = "margin")
+
+#2 Do tanks follow different temporal trajectories? Do microbiomes change through time differently in different tanks? Not Significant
 set.seed(30)
-adonis2(
-  Bac.seq.rel.wu ~ Geno + Date + Geno:Date,
-  data = Bac.seq.rel.wu.df,
-  permutations = 999,
-  by = "terms"
-)
-
-#interactions: marginal (partial) sums of squares method
-adonis2(
-  Bac.seq.rel.wu ~ Date * tank.x * Geno,
-  data = Bac.seq.rel.wu.df,
-  by = "margin"
-)
-
 adonis2(
   Bac.seq.rel.wu ~ Geno + Date * tank.x,
   data = Bac.seq.rel.wu.df,
   by = "margin"
 )
 
+# Pairwise PERMANOVA between tanks, controlling for genotype ####
+# this helps identify which tanks are driving the differences
+
+tanks <- unique(Bac.seq.rel.wu.df$tank.x)
+
+pairwise_res <- combn(tanks, 2, simplify = FALSE, FUN = function(x) {
+  df_sub <- Bac.seq.rel.wu.df %>% filter(tank.x %in% x)
+
+  dist_sub <- as.dist(as.matrix(Bac.seq.rel.wu)[rownames(df_sub), rownames(df_sub)])
+
+  ad <- adonis2(
+    dist_sub ~ Geno + tank.x,
+    data = df_sub,
+    by = "margin",
+    permutations = 999
+  )
+
+  data.frame(
+    tank1 = x[1],
+    tank2 = x[2],
+    R2 = ad["tank.x", "R2"],
+    p = ad["tank.x", "Pr(>F)"]
+  )
+})
+
+pairwise_df <- bind_rows(pairwise_res)
+
+# FDR correction
+pairwise_df$p_adj <- p.adjust(pairwise_df$p, method = "fdr")
+
+pairwise_df %>% arrange(p_adj) #of the 5 pairs that are sig, NWQ4 is part of 4. 
+
+
+```
+PERMANOVA - Looking at the question - Microbiomes adjust rapidly after exposure to a new species context, then stabilize.
+Here, we test Time 0 (4/3) to all later time points -Is the microbiome at the initial state different from the post-adjustment state?
+```{r}
+Bac.seq.rel.wu.df <- Bac.seq.rel.wu.df %>%
+  dplyr::mutate(
+    Date = as.Date(Date, format = "%m/%d/%y")
+  )
+#Create a binary “pre vs post” time variable
+Bac.seq.rel.wu.df <- Bac.seq.rel.wu.df %>%
+  dplyr::mutate(
+    TimePhase = ifelse(Date == as.Date("2023-04-03"),
+                       "T0",
+                       "Post")
+  )
+Bac.seq.rel.wu.df <- Bac.seq.rel.wu.df %>% #order
+  dplyr::mutate(
+    TimePhase = factor(TimePhase, levels = c("T0", "Post"))
+  )
+
+#permanova
+set.seed(30)
+adonis2(
+  Bac.seq.rel.wu ~ Geno + TimePhase,
+  data = Bac.seq.rel.wu.df,
+  by = "margin"
+) #not significant p=0.09
+
+#dispersion - not significant p= 0.14
+bd_time <- betadisper(Bac.seq.rel.wu, Bac.seq.rel.wu.df$TimePhase)
+anova(bd_time)
+
+
+
+```
+
+
+testing within each tank/geno, prob dont need due to low n
+```{r}
 # test Date within each tank - p>0.05 so within tanks nothing changes over time ####
 # make sure rownames are right
 stopifnot(all(attr(Bac.seq.rel.wu, "Labels") == rownames(Bac.seq.rel.wu.df)))
@@ -348,16 +423,17 @@ res_by_geno <- lapply(geno_idx_list, function(idx) {
 
 res_by_geno
 
-##### Ok let's try again with date as numeric (above it adonis makes it categorical)####
+##### Ok let's try again with date as numeric ####
 Bac.seq.rel.wu.df$Date <- as.Date(Bac.seq.rel.wu.df$Date, format="%m/%d/%y")
 
 Bac.seq.rel.wu.df$DayNum <- as.numeric(Bac.seq.rel.wu.df$Date) -
                              min(as.numeric(Bac.seq.rel.wu.df$Date))
 
-#1) db-RDA (distance-based redundancy analysis) Uses genotype/tank as covariates, time as numeric:
+#1) db-RDA (distance-based redundancy analysis) Uses genotype/tank as covariates, time as numeric: Is there a directional pattern in community composition that can be explained by a predictor, after accounting for other sources of variation? is there a directional gradient?
+
 cap <- capscale(Bac.seq.rel.wu ~ DayNum + Condition(Geno) + Condition(tank.x),
                 data = Bac.seq.rel.wu.df)
-anova(cap) # p=0.009
+anova(cap) # p=0.014
 
 
 #2) NMDS axis regression 
@@ -407,8 +483,10 @@ anova(m_Y27)
 summary(m_Y27)
 
 
+```
 
 # Homogeneity of dispersion test  -
+```{r}
 bd <- betadisper(Bac.seq.rel.wu, Bac.seq.rel.wu.df$Date)
 anova(bd)            # significance test
 TukeyHSD(bd)         # which dates differ
@@ -430,10 +508,806 @@ boxplot(bd_Y27)
 
 ```
 
-Time-point explained microbial compositional variation when tested alone (adonis2; R² = 0.126, p = 0.001). However, when genotype and tank were included as covariates, the marginal effect of time was no longer detectable, indicating that temporal shifts differ among genotypes and/or tank environments rather than representing a uniform or global temporal trend (adonis2; p > 0.05; Type II model).
 
-There are microbiome changes over time.Those changes depend on genotype/tank structure, so they are not globally consistent.
-Time explains variation, but that time effect is structured — not homogeneous — across genotypes/tanks.
+Delete?
+Question 1 - more explicitly - Do microbiomes change over time within each treatment tank?
+time × treatment
+```{r}
+#Test time within each tank, accounting for genotype - Tab 2 Q1 Adonis
+# distance ~ Geno + Date   (Type II / marginal)in 
+# Do microbiomes change over time within each treatment tank, accounting for genotype?
+
+res_by_tank <- lapply(
+  split(seq_len(nrow(Bac.seq.rel.wu.df)), Bac.seq.rel.wu.df$tank.x),
+  function(idx) {
+    adonis2(
+      as.dist(as.matrix(Bac.seq.rel.wu)[idx, idx]) ~
+        Geno + Date,
+      data = Bac.seq.rel.wu.df[idx, ],
+      by = "margin"
+    )
+  }
+)
 
 
+
+```
+
+Rerun these:
+Main inferential analysis for replicated treatments only (Control vs Mixed ONLY). 
+Geno explains 33% of variation. There is no difference between treatments across time. 
+Treatment:Date p=0.10
+Treatment:Time p=0.23
+```{r}
+#1) Make a Treatment factor and keep TankID
+df_cm <- subset(Bac.seq.rel.wu.df, tank.x %in% c("FL_Control_1","FL_Control_2","Mixed_1","Mixed_2"))
+
+df_cm$Treatment <- ifelse(grepl("^FL_Control", df_cm$tank.x), "Control", "Mixed")
+df_cm$Treatment <- factor(df_cm$Treatment)
+df_cm$TankID <- factor(df_cm$tank.x)
+
+dist_cm <- as.dist(as.matrix(Bac.seq.rel.wu)[rownames(df_cm), rownames(df_cm)])
+
+#2) Test whether treatments change differently through time, accounting for genotype and tank within treatment: Not Significant, 
+
+perm_tank <- how(blocks = df_cm$TankID)
+set.seed(30)
+
+adonis2(
+  dist_cm ~ Geno + Treatment*Date + Treatment:TankID,
+  data = df_cm,
+  by = "margin",
+  permutations = perm_tank
+)
+
+#testing differences only at endpoint: Not significant
+
+df_end <- subset(df_cm, Date == max(Date))
+dist_end <- as.dist(as.matrix(dist_cm)[rownames(df_end), rownames(df_end)])
+
+perm_end <- how(blocks = df_end$TankID)
+set.seed(1)
+
+adonis2(
+  dist_end ~ Geno + Treatment + Treatment:TankID,
+  data = df_end,
+  by = "margin",
+  permutations = perm_end
+)
+
+#Conclusion: The mixed treatment does not produce a consistent microbiome response across tanks (Mixed_2 is the only one significant)
+
+```
+
+#NMDS plots
+```{r}
+
+# NMDS on the full distance matrix
+set.seed(1)
+nmds <- metaMDS(Bac.seq.rel.wu, k = 2, trymax = 50)
+
+# Extract site scores
+site <- as.data.frame(vegan::scores(nmds, display = "sites"))
+site$SampleID <- rownames(site)
+
+# Join metadata
+df_plot <- Bac.seq.rel.wu.df %>%
+  mutate(SampleID = rownames(Bac.seq.rel.wu.df)) %>%
+  inner_join(site, by = "SampleID")
+
+# Make sure Date is an actual Date and ordered
+# Use the format that matches your data; %m/%d/%y worked for you earlier
+if (!inherits(df_plot$Date, "Date")) {
+  df_plot$Date <- as.Date(df_plot$Date, format = "%m/%d/%y")
+}
+df_plot <- df_plot %>% arrange(tank.x, Geno, Date)
+
+df_plot <- df_plot %>%
+  dplyr::mutate(
+    Date = as.Date(Date),
+    Date_f = factor(Date, levels = sort(unique(Date)))
+  )
+
+n_dates <- nlevels(df_plot$Date_f)
+pal_date <- grDevices::rainbow(n_dates)
+
+ggplot(df_plot, aes(x = NMDS1, y = NMDS2)) +
+  geom_point(aes(color = Date_f), size = 2, alpha = 0.9) +
+  facet_wrap(~ tank.x) +
+  scale_color_manual(values = pal_date) +
+  theme_bw() +
+  labs(
+    title = "NMDS of microbiome composition",
+    subtitle = "Faceted by tank; points colored by sampling date",
+    color = "Date"
+  )
+
+#now add convex hulls around dates
+hulls_date <- df_plot %>%
+  dplyr::group_by(tank.x, Date_f) %>%
+  dplyr::filter(n() >= 3) %>%                     # need ≥3 points for a hull
+  slice(chull(NMDS1, NMDS2)) %>%
+  ungroup()
+
+ggplot(df_plot, aes(x = NMDS1, y = NMDS2)) +
+  # date polygons
+  geom_polygon(
+    data = hulls_date,
+    aes(fill = Date_f, group = interaction(tank.x, Date_f)),
+    alpha = 0.2,
+    color = NA
+  ) +
+  # points
+  geom_point(
+    aes(color = Date_f),
+    size = 2,
+    alpha = 0.9
+  ) +
+  facet_wrap(~ tank.x) +
+  scale_color_manual(values = pal_date) +
+  scale_fill_manual(values = pal_date) +
+  theme_bw() +
+  labs(
+    title = "NMDS of microbiome composition",
+    subtitle = "Convex hulls indicate sampling dates; faceted by tank",
+    color = "Date",
+    fill  = "Date"
+  )
+
+#ggsave(filename = "outputs/acer_nmds_bytankRainbow.pdf", plot = last_plot())
+
+ 
+# facet by Date ####
+n_tanks <- length(unique(df_plot$tank.x))
+tank_pal <- hcl.colors(n_tanks, palette = "Dark 3")
+
+hulls_tank <- df_plot %>%
+  dplyr::group_by(Date_f, tank.x) %>%
+  dplyr::filter(dplyr::n() >= 3) %>%   # need ≥3 points per hull
+  dplyr::slice(chull(NMDS1, NMDS2)) %>%
+  dplyr::ungroup()
+
+n_tanks <- length(unique(df_plot$tank.x))
+tank_pal <- hcl.colors(n_tanks, palette = "Dark 3")
+
+ggplot(df_plot, aes(x = NMDS1, y = NMDS2)) +
+  # tank polygons (within each Date facet)
+  geom_polygon(
+    data = hulls_tank,
+    aes(
+      fill = tank.x,
+      group = interaction(Date_f, tank.x)
+    ),
+    alpha = 0.2,
+    color = NA
+  ) +
+  # points
+  geom_point(
+    aes(color = tank.x),
+    size = 2,
+    alpha = 0.9
+  ) +
+  facet_wrap(~ Date_f) +
+  scale_color_manual(values = tank_pal) +
+  scale_fill_manual(values = tank_pal) +
+  theme_bw() +
+  labs(
+    title = "NMDS of microbiome composition",
+    subtitle = "Faceted by sampling date; colors and hulls indicate tank",
+    color = "Tank",
+    fill  = "Tank"
+  )
+#ggsave(filename = "outputs/acer_nmds_by_date.pdf", plot = last_plot())
+
+
+#plot with Centroids per tank (No date)  ####
+#NMDS - centroids to show tank differences
+# ---- Highlight tanks ----
+df_plot <- df_plot %>%
+  dplyr::mutate(
+    tank_highlight = dplyr::case_when(
+      tank.x == "NWQ4" ~ "NWQ4",
+      tank.x == "P4"   ~ "P4",
+      TRUE             ~ "Other"
+    )
+  )
+
+# ---- Compute centroids ----
+tank_centroids <- df_plot %>%
+  dplyr::group_by(tank.x) %>%
+  dplyr::summarise(
+    NMDS1 = mean(NMDS1, na.rm = TRUE),
+    NMDS2 = mean(NMDS2, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    tank_highlight = dplyr::case_when(
+      tank.x == "NWQ4" ~ "NWQ4",
+      tank.x == "P4"   ~ "P4",
+      TRUE             ~ "Other"
+    )
+  )
+
+p <- ggplot() +
+  # background sample points
+  geom_point(
+    data = df_plot,
+    aes(x = NMDS1, y = NMDS2, color = tank_highlight),
+    size = 1.8,
+    alpha = 0.5,
+    position = position_jitter(width = 0.005, height = 0.005)
+  ) +
+  # centroid points
+  geom_point(
+    data = tank_centroids,
+    aes(x = NMDS1, y = NMDS2, fill = tank_highlight),
+    shape = 21,
+    size = 5,
+    color = "black",
+    stroke = 0.6
+  ) +
+  # label NWQ4 centroid
+  geom_text(
+    data = subset(tank_centroids, tank.x == "NWQ4"),
+    aes(x = NMDS1, y = NMDS2, label = "NWQ4"),
+    vjust = -1.2,
+    fontface = "bold",
+    size = 4,
+    inherit.aes = FALSE
+  ) +
+  # label P4 centroid
+  geom_text(
+    data = subset(tank_centroids, tank.x == "P4"),
+    aes(x = NMDS1, y = NMDS2, label = "P4"),
+    vjust = -1.2,
+    fontface = "bold",
+    size = 4,
+    inherit.aes = FALSE
+  ) +
+  # colors
+  scale_color_manual(
+    values = c(
+      "NWQ4"  = "#d73027",  # red
+      "P4"    = "#4575b4",  # blue
+      "Other" = "grey60"
+    ),
+    guide = "none"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "NWQ4"  = "#d73027",
+      "P4"    = "#4575b4",
+      "Other" = "white"
+    ),
+    guide = "none"
+  ) +
+  coord_cartesian(
+    xlim = c(-0.02, 0.06),
+    ylim = c(-0.01, 0.01)
+  ) +
+  theme_bw() +
+  labs(
+    title = "NMDS of microbiome composition",
+    subtitle = "Tank centroids shown; NWQ4 (red) and P4 (blue) highlighted"
+  );p
+
+#ggsave(filename = "outputs/acer_nmds_tankCentroids.pdf",plot = p) 
+
+
+# Compare centroid distance to dispersion explicitly ####
+#dispersion differs significantly between tanks
+bd_tank <- betadisper(Bac.seq.rel.wu, Bac.seq.rel.wu.df$tank.x)
+anova(bd_tank) #p=0.0022
+TukeyHSD(bd_tank)
+
+pairwise.adonis2(
+  Bac.seq.rel.wu ~ tank.x,
+  data = Bac.seq.rel.wu.df,
+  strata = Bac.seq.rel.wu.df$Geno
+)
+
+#Next -Are NWQ4 and P4 different in within-tank variability (distance to centroid)?
+disp_df <- data.frame(
+  Sample   = rownames(Bac.seq.rel.wu.df),
+  tank.x   = Bac.seq.rel.wu.df$tank.x,
+  Distance = bd_tank$distances
+)
+
+disp_NWQ4_P4 <- disp_df %>% #subset to NWQ4 and P4
+  dplyr::filter(tank.x %in% c("NWQ4", "P4"))
+
+#Wilcoxon test
+wilcox.test(Distance ~ tank.x, data = disp_NWQ4_P4) #W = 403, p-value = 0.06441, cannot say tank dispersion differs
+
+#Is one tank more heterogeneous than the other? Welch t-test p = 0.876, mean(NWQ4) = 0.03435, mean(P4)= 0.03685, basically the same so dispersion like avg dispersion the same 
+t.test(Distance ~ tank.x, data = disp_NWQ4_P4) 
+
+#plot
+geom_text(
+  data = med_df,
+  aes(
+    x = tank.x,
+    y = median_dist,
+    label = sprintf("%.3f", median_dist)
+  ),
+  vjust = -1.2,
+  fontface = "bold",
+  size = 4)
+
+ggplot(disp_NWQ4_P4, aes(x = tank.x, y = Distance, fill = tank.x)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.7) +
+  scale_fill_manual(values = c("NWQ4" = "#d73027", "P4" = "grey70")) +
+  geom_text(
+  data = med_df,
+  aes(
+    x = tank.x,
+    y =  median_dist + 0.002,
+    label = sprintf("%.3f", median_dist)
+  ),
+  vjust = -1.2,
+  fontface = "bold",
+  size = 4)+
+theme_bw() +
+  labs(
+    x = "Tank",
+    y = "Distance to centroid",
+    title = "Within-tank microbiome variability",
+    subtitle = "NWQ4 vs P4"
+  ) +
+  theme(legend.position = "none")+annotate(
+  "text",
+  x = 1,
+  y = max(disp_NWQ4_P4$Distance) * 0.95,
+  label = "Medians do not differ (Wilcoxon p = 0.17)",
+  size = 4,
+  fontface = "italic"
+)
+
+#ggsave(filename = "outputs/acer_boxplot_inTankVariationP4NWQ4.pdf", plot = last_plot())
+
+
+# plot distance to centroid for all tanks ####
+
+
+# Build dispersion dataframe
+
+# 1) Per-sample dispersion table from betadisper output
+disp_all <- tibble(
+  Sample   = rownames(Bac.seq.rel.wu.df),
+  tank.x   = Bac.seq.rel.wu.df$tank.x,
+  Distance = bd_tank$distances
+) %>%
+  mutate(tank.x = as.character(tank.x)) %>%            # force character
+  mutate(tank.x = reorder(tank.x, Distance, FUN = median))  # reorder for plotting
+
+# 2) Median labels for just NWQ4 and P4
+med_df <- disp_all %>%
+  mutate(tank_chr = as.character(tank.x)) %>%          # stable tank name
+  filter(tank_chr %in% c("NWQ4", "P4")) %>%
+  dplyr::group_by(tank_chr) %>%
+  dplyr::summarise(
+    med = median(Distance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    y_lab = med + 0.001,                               # nudge up; adjust if needed
+    lab   = sprintf("median = %.3f", med)
+  )
+
+# 3) Fill colors: grey for all tanks, with NWQ4 red and P4 blue
+tank_levels <- levels(disp_all$tank.x)
+fill_vals <- setNames(rep("grey80", length(tank_levels)), tank_levels)
+fill_vals["NWQ4"] <- "#d73027"
+fill_vals["P4"]   <- "#4575b4"
+
+annot_text <- "betadisper by tank: F = 3.16, p = 0.0022"
+
+# 4) Plot
+ggplot(disp_all, aes(x = tank.x, y = Distance, fill = tank.x)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 1.8, alpha = 0.6) +
+  scale_fill_manual(values = fill_vals, guide = "none") +
+  geom_text(
+    data = med_df,
+    aes(x = tank_chr, y = y_lab, label = lab),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 3.5
+  ) +
+  theme_bw() +
+  labs(
+    x = "Tank",
+    y = "Distance to centroid",
+    title = "Within-tank microbiome variability"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = annot_text,
+    hjust = 1.05, vjust = 1.5,
+    size = 3.5
+  )
+#ggsave(filename = "outputs/acer_boxplot_ALL.pdf", plot = last_plot())
+
+#plot same as above with geno points color ####
+# 1) Per-sample dispersion table
+disp_all <- tibble(
+  Sample   = rownames(Bac.seq.rel.wu.df),
+  tank.x   = Bac.seq.rel.wu.df$tank.x,
+  Geno     = Bac.seq.rel.wu.df$Geno,
+  Distance = bd_tank$distances
+) %>%
+  mutate(
+    tank.x = as.character(tank.x),
+    tank.x = reorder(tank.x, Distance, FUN = median)
+  )
+
+# 2) Median labels for NWQ4 and P4
+med_df <- disp_all %>%
+  filter(tank.x %in% c("NWQ4", "P4")) %>%
+  dplyr::group_by(tank.x) %>%
+  dplyr::summarise(
+    med = median(Distance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    y_lab = med + 0.001,
+    lab   = sprintf("median = %.3f", med)
+  )
+
+# 3) Box fill colors (tank-level)
+tank_levels <- levels(factor(disp_all$tank.x))
+fill_vals <- setNames(rep("grey80", length(tank_levels)), tank_levels)
+fill_vals["NWQ4"] <- "#d73027"
+fill_vals["P4"]   <- "#4575b4"
+
+annot_text <- "betadisper by tank: F = 3.16, p = 0.0022"
+
+# 4) Plot
+ggplot(disp_all, aes(x = tank.x, y = Distance)) +
+  # boxplots (tank-level)
+  geom_boxplot(
+    aes(fill = tank.x),
+    outlier.shape = NA,
+    alpha = 0.7
+  ) +
+  # points colored by genotype
+  geom_jitter(
+    aes(color = Geno),
+    width = 0.15,
+    size = 1.8,
+    alpha = 0.7
+  ) +
+  scale_fill_manual(values = fill_vals, guide = "none") +
+  theme_bw() +
+  labs(
+    x = "Tank",
+    y = "Distance to centroid",
+    title = "Within-tank microbiome variability",
+    color = "Genotype"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  # median labels
+  geom_text(
+    data = med_df,
+    aes(x = tank.x, y = y_lab, label = lab),
+    inherit.aes = FALSE,
+    fontface = "bold",
+    size = 3.5
+  ) +
+  # annotation
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    label = annot_text,
+    hjust = 1.05, vjust = 1.5,
+    size = 3.5
+  )
+
+#ggsave(filename = "outputs/acer_boxplot_GEno.pdf", plot = last_plot())
+
+#plot same as above with DATE points color ####
+
+# 1) Build per-sample dispersion table from betadisper output + attach metadata needed for coloring
+disp_all <- data.frame(
+  Sample   = rownames(Bac.seq.rel.wu.df),
+  tank.x   = Bac.seq.rel.wu.df$tank.x,
+  Date     = Bac.seq.rel.wu.df$Date,
+  Distance = bd_tank$distances
+) %>%
+  mutate(
+    Date   = as.Date(Date),  # safe even if already Date
+    Date_f = factor(Date, levels = sort(unique(Date))),
+    tank.x = reorder(tank.x, Distance, FUN = median)
+  )
+
+# 2) Median labels for just NWQ4 and P4
+med_df <- disp_all %>%
+  filter(as.character(tank.x) %in% c("NWQ4", "P4")) %>%
+  dplyr::group_by(tank.x) %>%
+  dplyr::summarise(med = median(Distance, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    y_lab = med + 0.001,                 # nudge up; adjust if needed
+    lab   = sprintf("median = %.3f", med)
+  )
+
+# 3) Tank fill colors (boxes): grey for all tanks, NWQ4 red, P4 blue
+tank_levels <- levels(disp_all$tank.x)
+fill_vals <- setNames(rep("grey80", length(tank_levels)), tank_levels)
+fill_vals["NWQ4"] <- "#d73027"
+fill_vals["P4"]   <- "#4575b4"
+
+# 4) Date colors (points): rainbow in chronological order
+date_levels <- levels(disp_all$Date_f)
+date_cols <- setNames(grDevices::rainbow(length(date_levels)), date_levels)
+
+annot_text <- "betadisper by tank: F = 3.16, p = 0.0022"
+
+# ensure Date is a factor in chronological order
+disp_all <- disp_all %>%
+  mutate(Date_f = factor(Date, levels = sort(unique(Date))))
+
+ggplot(disp_all, aes(x = tank.x, y = Distance)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.7, fill = "grey85") +
+  geom_jitter(
+    aes(color = Date_f),
+    width = 0.15,
+    size = 1.8,
+    alpha = 0.8
+  ) +
+  scale_color_viridis_d(option = "plasma", end = 0.95) +
+  theme_bw() +
+  labs(
+    x = "Tank",
+    y = "Distance to centroid",
+    title = "Within-tank microbiome variability",
+    color = "Sampling date"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+#ggsave(filename = "outputs/acer_boxplot_Date.pdf", plot = last_plot())
+
+
+```
+
+Alpha Diversity
+```{r}
+#Shannon, richness, evenness (Pielou’s J)
+#using counts data Bac.seq.ACER
+ps <- Bac.seq.ACER   # change this to your counts object
+
+# Richness + Shannon from phyloseq
+alpha_df <- estimate_richness(ps, measures = c("Observed", "Shannon")) %>%
+  tibble::rownames_to_column("SampleID") %>%
+  dplyr::rename(
+    Richness = Observed,
+    Shannon  = Shannon
+  ) %>%
+  dplyr::mutate(
+    Evenness = ifelse(Richness > 0, Shannon / log(Richness), NA_real_)
+  )
+
+alpha_df <- alpha_df %>%
+  dplyr::mutate(
+    SampleID = sub("^X", "", SampleID)
+  )
+# Add metadata
+meta_df <- as(sample_data(ps), "data.frame") %>%
+  tibble::rownames_to_column("SampleID")
+
+alpha_df <- alpha_df %>%
+  left_join(meta_df, by = "SampleID")
+
+alpha_df
+
+#Models ####
+# Shannon
+hist(alpha_df$Shannon)
+hist(log(alpha_df$Shannon)) #good
+
+alpha_df <- alpha_df %>%
+  mutate(
+    logShannon = log(Shannon),
+    Date = as.factor(Date),
+    tank.x = as.factor(tank.x),
+    Geno = as.factor(Geno)
+  )
+
+m2 <- lmer(logShannon ~ tank.x *Date + (1 | Geno), data = alpha_df)
+anova(m2)
+
+par(mfrow = c(2,2)) #check residuals
+plot(m2) # good
+
+
+# Richness
+hist(alpha_df$Richness)
+hist(log(alpha_df$Richness)) #good
+
+alpha_df <- alpha_df %>%
+  mutate(
+    logRichness = log(Richness),
+    Date = as.factor(Date),
+    tank.x = as.factor(tank.x),
+    Geno = as.factor(Geno)
+  )
+
+m2 <- lmer(logRichness ~ tank.x *Date + (1 | Geno), data = alpha_df)
+anova(m2)
+
+par(mfrow = c(2,2)) #check residuals
+plot(m2) # this is ok, but not great...lets try to deal with this using GLMM ->
+
+library(glmmTMB)
+library(car)
+m_rich_nb <- glmmTMB(
+  Richness ~ tank.x * Date + (1 | Geno),
+  data = alpha_df,
+  family = nbinom2()
+)
+
+Anova(m_rich_nb, type = 2)
+
+
+# Evenness
+hist(alpha_df$Evenness)
+hist(log(alpha_df$Evenness)) #good
+
+
+alpha_df <- alpha_df %>%
+  mutate(logEvenness = log(Evenness))
+
+options(contrasts = c("contr.sum", "contr.poly"))
+m_ev
+en <- lmer(
+  logEvenness ~ tank.x * Date + (1 | Geno),
+  data = alpha_df
+)
+
+anova(m_even) #interaction not sig
+
+
+
+```
+Alpha Plots
+```{r}
+#plots ####
+# make sure Date is an ordered factor
+alpha_df <- alpha_df %>%
+  dplyr::mutate(
+    Date_f = factor(Date, levels = sort(unique(Date)))
+  )
+
+# Reuse the SAME Date levels
+date_levels <- levels(alpha_df$Date_f)
+
+scale_color_viridis_d(option = "plasma", end = 0.95)
+
+
+# Use the SAME palette you used before (example: rainbow)
+date_pal <- setNames(
+  grDevices::rainbow(length(date_levels)),
+  date_levels
+)
+
+library(viridis)
+
+#Richness ####
+ggplot(alpha_df, aes(x = tank.x, y = Richness)) +
+  # boxplots by Date within tank
+  geom_boxplot(
+    aes(fill = Date_f, group = interaction(tank.x, Date_f)),
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    alpha = 0.5
+  ) +
+
+  # points overlaid
+  geom_jitter(
+    aes(color = Date_f),
+    position = position_jitterdodge(
+      jitter.width = 0.15,
+      dodge.width  = 0.8
+    ),
+    size = 2,
+    alpha = 0.8
+  ) +
+
+  # viridis colors (same as your other plots)
+  scale_fill_viridis_d(option = "D", end = 0.95) +
+  scale_color_viridis_d(option = "D", end = 0.95) +
+
+  theme_bw() +
+  labs(
+    x = "Tank",
+    y = "Richness",
+    fill  = "Date",
+    color = "Date"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "outputs/acer_richness.pdf",plot = last_plot(),width = 10,height = 5,units = "in")
+
+#Evenness
+ggplot(alpha_df, aes(x = tank.x, y = Evenness)) +
+  # boxplots by Date within tank
+  geom_boxplot(
+    aes(fill = Date_f, group = interaction(tank.x, Date_f)),
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    alpha = 0.5
+  ) +
+
+  # points overlaid
+  geom_jitter(
+    aes(color = Date_f),
+    position = position_jitterdodge(
+      jitter.width = 0.15,
+      dodge.width  = 0.8
+    ),
+    size = 2,
+    alpha = 0.8
+  ) +
+
+  # viridis colors (same as your other plots)
+  scale_fill_viridis_d(option = "D", end = 0.95) +
+  scale_color_viridis_d(option = "D", end = 0.95) +
+
+  theme_bw() +
+  labs(
+    x = "Tank",
+    y = "Evenness",
+    fill  = "Date",
+    color = "Date"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+ggsave(filename = "outputs/acer_evennenss.pdf",plot = last_plot(),width = 10,height = 5,units = "in")
+
+#Shannnon
+ggplot(alpha_df, aes(x = tank.x, y = Shannon)) +
+  # boxplots by Date within tank
+  geom_boxplot(
+    aes(fill = Date_f, group = interaction(tank.x, Date_f)),
+    position = position_dodge(width = 0.8),
+    outlier.shape = NA,
+    alpha = 0.5
+  ) +
+
+  # points overlaid
+  geom_jitter(
+    aes(color = Date_f),
+    position = position_jitterdodge(
+      jitter.width = 0.15,
+      dodge.width  = 0.8
+    ),
+    size = 2,
+    alpha = 0.8
+  ) +
+
+  # viridis colors (same as your other plots)
+  scale_fill_viridis_d(option = "D", end = 0.95) +
+  scale_color_viridis_d(option = "D", end = 0.95) +
+
+  theme_bw() +
+  labs(
+    x = "Tank",
+    y = "Shannon",
+    fill  = "Date",
+    color = "Date"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+#ggsave(filename = "outputs/acer_shannon.pdf",plot = last_plot(),width = 10,height = 5,units = "in")
+
+
+```
 

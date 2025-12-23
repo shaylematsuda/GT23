@@ -73,9 +73,13 @@ md <- md %>%
 #issue with Tube 1046, remove tube when Tank.datasheet is HI_Control_2 which was removed from experiment
 md <- md %>%
   filter(!(Tube == 1046 & Tank.datasheet == "HI_Control_2"))
-#issue with Tube 436. frag 92 (acer) tube 436 was written on data sheet. But it was not erased from 1291-8 (pcomp). for NOW keep frag 92 but check NMDS to confirm species. potentially trash. 
+#issue with Tube 436. frag 92 (acer) tube 436 was written on data sheet. But it was not erased from 1291-8 (pcomp). for NOW keep frag 92 but check NMDS to confirm species. potentially trash. 12/19/25 checked NMDS nat ACER, trash incase of contam
 md <- md %>%
   filter(!(Tube == 436 & Tank.datasheet == "HI_Control_2"))
+md <- md %>%
+  filter(!(Tube == 436 & Tank.datasheet == "NWQ4"))
+
+
 
 # now merge:
 miseq_merged <- miseq %>%
@@ -219,8 +223,15 @@ sums<-sample_sums(Bac.seq)
 sums<-as.data.frame(sums)
 #write.csv(sums, "sums.csv")
 
+
 # create df of sample data to view 
 sample.data <- as(sample_data(Bac.seq), "data.frame") #create sample data frame to view
+
+
+sample.data %>%
+  dplyr::count(tank.x, Date) %>%
+  arrange(tank.x, Date)
+
 sample.data$LibrarySize <- sample_sums(Bac.seq)
 sample.data <- sample.data[order(sample.data$LibrarySize),]
 sample.data$Index <- seq(nrow(sample.data))  
@@ -373,6 +384,12 @@ ggplot(df_plot, aes(x = Sample_ID, y = Abundance, fill = Family)) +
 
 Bac.seq<-subset_samples(Bac.seq, Sample_ID!="436dup")
 Bac.seq<-subset_samples(Bac.seq, Sample_ID!="480dup")
+Bac.seq
+
+# look at 'extras', these were extra frags of same genos duped in controls only. drop frag 58, 86, and 99
+Bac.seq<-subset_samples(Bac.seq, Frag.ID!="58")
+Bac.seq<-subset_samples(Bac.seq, Frag.ID!="86")
+Bac.seq<-subset_samples(Bac.seq, Frag.ID!="99")
 Bac.seq
 ```
 Save file
