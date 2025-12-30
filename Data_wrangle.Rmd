@@ -398,3 +398,13 @@ Save file
 save(Bac.seq, file = "RData/Bac.3k.RData")
 ```
 
+
+
+#System corals
+```{r}
+system <- read.csv(
+  "Tracks_JD.csv",
+  fileEncoding = "UTF-8-BOM",
+  check.names = FALSE
+)```
+

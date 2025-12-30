@@ -31,6 +31,10 @@ library(viridis)
 library(lme4)
 library(lmerTest)
 
+library(glmmTMB)
+library(ANCOMBC)
+
+
 library(microbiome)  
 library(tidyverse)
 ```
@@ -180,6 +184,7 @@ acer.abund.melt <- acer.abund.melt %>%
 acer.list <- unique(acer.abund.melt$Genus) #tops
 
 #Genus
+
 sum <- ddply(acer.abund.melt, c( "tank.x", "Date", "Genus"), summarise,
              N = length(Abundance), 
              mean = mean(Abundance),
@@ -312,6 +317,14 @@ adonis2(Bac.seq.rel.wu ~ Geno, data = Bac.seq.rel.wu.df) # p=0.001
 #Ignoring Date, controling for genotype
 set.seed(30)  #~Genotype + Tank, under a reduced model.  
 adonis2(Bac.seq.rel.wu ~ Geno + tank.x,data = Bac.seq.rel.wu.df,by = "margin")
+
+  #adding in strata to account for ramets of each genet in each tank
+  adonis2(
+    Bac.seq.rel.wu ~ tank.x,
+    data = Bac.seq.rel.wu.df,
+    by = "margin",
+    strata = Bac.seq.rel.wu.df$Geno
+  )
 
 #2 Do tanks follow different temporal trajectories? Do microbiomes change through time differently in different tanks? Not Significant
 set.seed(30)
@@ -1072,7 +1085,7 @@ ggplot(disp_all, aes(x = tank.x, y = Distance)) +
 
 ```
 
-Alpha Diversity
+#Alpha Diversity
 ```{r}
 #Shannon, richness, evenness (Pielou’s J)
 #using counts data Bac.seq.ACER
@@ -1310,4 +1323,492 @@ ggplot(alpha_df, aes(x = tank.x, y = Shannon)) +
 
 
 ```
+# ANCOM
+ANCOM-BC2
+Which taxa differ in abundance between tanks (esp NWQ4), after accounting for Date and Geno?
+
+Running into a lot of issue with this code. come back to it. 
+```{r}
+library(ANCOMBC)
+ps_counts<-Bac.seq.ACER #dup
+sample_data(ps_counts)$Date <- as.Date(sample_data(ps_counts)$Date, format = "%m/%d/%y")
+sample_data(ps_counts)$Date <- factor(sample_data(ps_counts)$Date)
+sample_data(ps_counts)$tank.x <- factor(sample_data(ps_counts)$tank.x)
+sample_data(ps_counts)$Geno <- factor(sample_data(ps_counts)$Geno)
+
+sd <- data.frame(sample_data(ps_counts)) #to compare T0 to everything else laster
+sd$Date <- as.Date(sd$Date, format = "%m/%d/%y")
+sd$TimePhase <- ifelse(sd$Date == as.Date("2023-04-03"), "T0", "Post")
+sd$TimePhase <- factor(sd$TimePhase, levels = c("T0","Post"))
+sample_data(ps_counts) <- sample_data(sd)
+
+#ANCOM-BC2, Full model, tank.x+Date+interaction+genotype (covariate)
+library(phyloseq)
+library(dplyr)
+library(ANCOMBC)
+
+# Grab sample_data as a plain data.frame
+sd <- data.frame(sample_data(ps_counts))
+sd$SampleID <- rownames(sd)
+
+# Keep only samples that are in ps_counts (should already be true, but safe)
+sd <- sd %>%
+  filter(SampleID %in% sample_names(ps_counts)) %>%
+  filter(!is.na(tank.x) & tank.x != "") %>%
+  mutate(
+    tank.x = droplevels(factor(tank.x)),
+    Geno   = droplevels(factor(Geno))
+  )
+
+# Prune phyloseq to the same samples and re-attach cleaned metadata
+ps_counts2 <- prune_samples(sd$SampleID, ps_counts)
+sample_data(ps_counts2) <- sample_data(sd %>% column_to_rownames("SampleID"))
+
+#  checks
+table(sample_data(ps_counts2)$tank.x)
+stopifnot(all(sample_names(ps_counts2) == rownames(sample_data(ps_counts2))))
+
+set.seed(30)
+
+res_tank_global <- ancombc2(
+  data = ps_counts2,
+  assay_name = "otu_table",
+  tax_level = NULL,
+  fix_formula = "Geno",
+  group = "tank.x",
+  rand_formula = NULL,
+  p_adj_method = "BH",
+  prv_cut = 0.05,
+  lib_cut = 3000,
+  struc_zero = TRUE,
+  neg_lb = TRUE,
+  global = TRUE,
+  pairwise = FALSE,   # start here
+  dunnet = FALSE,
+  trend = FALSE
+)
+
+set.seed(30)
+
+library(ANCOMBC)
+
+res_tank_global <- ancombc2(
+  data = ps_counts2,
+  assay_name = "otu_table",
+  tax_level = NULL,
+  fix_formula = "Geno",
+  group = "tank.x",
+  p_adj_method = "BH",
+  prv_cut = 0.01,
+  lib_cut = 3000,
+  struc_zero = FALSE,   # keep off for stability
+  neg_lb = TRUE,
+  global = TRUE,
+  pairwise = FALSE,
+  dunnet = FALSE,
+  trend = FALSE
+)
+
+res_tank_global$res_global |> 
+  dplyr::filter(diff_robust_abn == TRUE) |> 
+  dplyr::arrange(q_val)
+
+
+
+```
+
+#run linear models on individual taxa of interest:
+```{r}
+Bac.seq.rel2<-Bac.seq.rel
+
+sd <- as(sample_data(Bac.seq.rel2), "data.frame")  # plain DF
+sd <- as.data.frame(sd)                             # extra-safe
+
+sd <- sd %>%
+  mutate(
+    Date = mdy(Date),  # parses "4/3/23"
+    DayNum = as.integer(Date - min(Date, na.rm = TRUE))
+  )
+
+ps_rel <- transform_sample_counts(ps, function(x) x / sum(x))
+
+otu_long <- psmelt(ps_rel) %>%
+  as_tibble() %>%
+  rename(
+    SampleID = Sample,
+    Taxon = OTU,
+    RelAbund = Abundance
+  ) %>%
+  left_join(sd, by = "SampleID")
+
+library(tibble)
+library(lubridate)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(lme4)
+library(lmerTest)
+
+sd <- as(sample_data(Bac.seq.rel2), "data.frame") %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("SampleID") %>%
+  mutate(
+    Date = mdy(Date),
+    DayNum = as.integer(Date - min(Date, na.rm = TRUE)),
+    tank.x = factor(tank.x),
+    Geno   = factor(Geno)
+  )
+
+
+############# start again
+
+library(phyloseq)
+library(dplyr)
+library(tibble)
+library(lubridate)
+
+# metadata as plain DF
+sd <- as(sample_data(Bac.seq.rel2), "data.frame") |> 
+  as.data.frame() |>
+  mutate(
+    Date = mdy(Date),  # change to ymd() if your strings are "2023-04-03"
+    DayNum = as.integer(Date - min(Date, na.rm = TRUE))
+  ) |>
+  tibble::rownames_to_column("SampleID")  # only if rownames are sample IDs
+
+otu_long <- psmelt(Bac.seq.rel2) |>
+  as_tibble() |>
+  rename(
+    SampleID = Sample_ID,
+    Taxon    = OTU,
+    RelAbund = Abundance
+  ) |>
+  left_join(sd, by = "SampleID")
+
+#top 10
+top10 <- otu_long |>
+  group_by(Taxon) |>
+  summarise(mean_rel = mean(RelAbund, na.rm = TRUE), .groups = "drop") |>
+  arrange(desc(mean_rel)) |>
+  slice_head(n = 10) |>
+  pull(Taxon)
+
+otu_top <- otu_long |>
+  filter(Taxon %in% top10) |>
+  mutate(
+    tank.x = factor(tank.x.y),
+    Geno   = factor(Geno.x)
+  )
+
+#models ####
+library(lmerTest)
+
+eps <- 1e-6
+
+otu_top <- otu_top |>
+  mutate(
+    RelAbund_clip = pmin(pmax(RelAbund, eps), 1 - eps),
+    logitRel      = qlogis(RelAbund_clip)
+  )
+
+mods <- otu_top |>
+  group_by(Taxon) |>
+  group_map(~{
+    m <- lmer(logitRel ~ tank.x * DayNum + (1 | Geno), data = .x)
+    out <- anova(m)
+    list(model = m, anova = out)
+  })
+names(mods) <- unique(otu_top$Taxon)
+
+library(lmerTest)
+
+anova_tbl <- otu_top %>%
+  group_by(Taxon) %>%
+  group_modify(~{
+    m <- lmer(logitRel ~ tank.x * DayNum + (1 | Geno), data = .x)
+    out <- as.data.frame(anova(m))
+    out$term <- rownames(out)
+    rownames(out) <- NULL
+    out
+  }) %>%
+  ungroup()
+
+#write.csv(anova_tbl, "anova_tbl.csv")
+
+#models per OTU that was significant for tank (OTUS p<0.05) ####
+sig_taxa <- c("Otu0013", "Otu0031", "Otu0124")
+otu_sig <- otu_top |>
+  filter(Taxon %in% sig_taxa)
+
+taxon_posthoc <- otu_sig |>
+  group_by(Taxon) |>
+  nest() |>
+  mutate(
+    model = map(data, ~
+      lmer(
+        logitRel ~ tank.x.y * DayNum + (1 | Geno.x),
+        data = .x
+      )
+    ),
+
+    # marginal tank means
+    emm_tank = map(model, ~ emmeans(.x, ~ tank.x.y)),
+
+    # Tukey-adjusted pairwise tank contrasts
+    tank_pairs = map(
+      emm_tank,
+      ~ pairs(.x, adjust = "tukey") |> as.data.frame()
+    )
+  )
+
+tank_contrasts <- taxon_posthoc |>
+  select(Taxon, tank_pairs) |>
+  unnest(tank_pairs)
+
+#write.csv(tank_contrasts, "tank_contrasts.csv")
+
+```
+Plots of individual top 10 taxa
+```{r}
+# 1) Make sure Date is a real Date
+otu_top2 <- otu_top %>%
+  mutate(
+    Date = as.Date(Date.x),                    # if already Date
+    # If Date is like "4/3/23", use this instead:
+    # Date = mdy(Date),
+    tank.x = factor(tank.x)
+  )
+
+# 2) Summarize mean +/- SE per Taxon x Tank x Date
+sum_top <- otu_top2 %>%
+  group_by(Taxon, tank.x.x, Date.x) %>%
+  summarise(
+    mean_rel = mean(RelAbund, na.rm = TRUE),
+    se_rel   = sd(RelAbund, na.rm = TRUE) / sqrt(sum(!is.na(RelAbund))),
+    n        = sum(!is.na(RelAbund)),
+    .groups  = "drop"
+  )
+
+# Optional: order tanks by overall mean within each taxon (helps readability)
+# If you want a single consistent tank order across plots, comment this out.
+tank_order <- otu_top2 %>%
+  dplyr::group_by(tank.x.x) %>%
+   dplyr::summarise(overall_mean = mean(RelAbund, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(overall_mean)) %>%
+  pull(tank.x.x)
+sum_top <- sum_top %>% mutate(tank.x = factor(tank.x.x, levels = tank_order))
+
+# 3A) One figure, faceted (each taxon its own panel)
+p_facet <- ggplot(sum_top, aes(x = Date.x, y = mean_rel, group = tank.x, color = tank.x)) +
+  geom_line(linewidth = 0.8, alpha = 0.9) +
+  geom_point(size = 2, alpha = 0.9) +
+  geom_ribbon(
+    aes(ymin = pmax(mean_rel - se_rel, 0), ymax = pmin(mean_rel + se_rel, 1), fill = tank.x),
+    alpha = 0.15,
+    color = NA
+  ) +
+  facet_wrap(~ Taxon, scales = "free_y") +
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "Mean relative abundance",
+    color = "Tank",
+    fill  = "Tank",
+    title = "Top 10 taxa trajectories by tank over time"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+p_facet
+
+# Save the faceted figure wider
+ggsave("outputs/top10_taxa_tank_time_faceted.pdf", p_facet, width = 14, height = 9)
+
+# 3B) One PDF per taxon (each taxon gets its own plot)
+dir.create("outputs/top10_taxa_by_tank", recursive = TRUE, showWarnings = FALSE)
+
+taxa_list <- unique(sum_top$Taxon)
+
+for (tx in taxa_list) {
+  p_one <- ggplot(filter(sum_top, Taxon == tx),
+                  aes(x = Date, y = mean_rel, group = tank.x, color = tank.x)) +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2) +
+    geom_ribbon(
+      aes(ymin = pmax(mean_rel - se_rel, 0), ymax = pmin(mean_rel + se_rel, 1), fill = tank.x),
+      alpha = 0.15,
+      color = NA
+    ) +
+    theme_bw() +
+    labs(
+      x = "Date",
+      y = "Mean relative abundance",
+      color = "Tank",
+      fill  = "Tank",
+      title = paste("Taxon:", tx)
+    ) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  ggsave(
+    filename = file.path("outputs/top10_taxa_by_tank", paste0(tx, "_tank_time.pdf")),
+    plot = p_one,
+    width = 10, height = 6
+  )
+}
+
+# try again wtih Date spaced out####
+
+date_levels <- sort(unique(sum_top$Date.x))
+
+date_levels_spaced <- c(
+  as.character(date_levels[-length(date_levels)]),
+  "gap",
+  as.character(date_levels[length(date_levels)])
+)
+
+sum_top <- sum_top %>%
+  mutate(
+    Date_f = factor(
+      as.character(Date.x),
+      levels = date_levels_spaced,
+      ordered = TRUE
+    )
+  )
+
+###########
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(tidyr)
+
+# --- 0) Make sure Date.x is a real Date and RelAbund is numeric ---
+otu_long2 <- otu_long %>%
+  mutate(
+    Date.x = as.Date(Date.x),            # if this fails, swap to mdy(Date.x)
+    RelAbund = as.numeric(RelAbund)
+  )
+
+# Check quickly (should be 0..1-ish, not near 1 for a single OTU)
+summary(otu_long2$RelAbund)
+
+# --- 1) Top 10 taxa by mean relative abundance ---
+top10 <- otu_long2 %>%
+  group_by(Taxon) %>%
+  summarise(mean_rel = mean(RelAbund, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(mean_rel)) %>%
+  slice_head(n = 10) %>%
+  pull(Taxon)
+
+otu_top <- otu_long2 %>%
+  filter(Taxon %in% top10) %>%
+  dplyr::mutate(
+    tank.x.x = factor(tank.x.x)
+  )
+
+# --- 2) Summarize to one value per tank per date (mean ± SE) ---
+sum_top <- otu_top %>%
+  group_by(Taxon, tank.x.x, Date.x) %>%
+  summarise(
+    mean_rel = mean(RelAbund, na.rm = TRUE),
+    se_rel   = sd(RelAbund, na.rm = TRUE) / sqrt(sum(!is.na(RelAbund))),
+    .groups = "drop"
+  )
+
+# --- 3) Build DatePlot with extra spacing BEFORE the last date ---
+date_levels <- sort(unique(sum_top$Date.x))
+last_date   <- max(date_levels)
+
+sum_top <- sum_top %>%
+  mutate(
+    DatePlot = if_else(Date.x == last_date, as.character(Date.x), as.character(Date.x)),
+    DatePlot = factor(DatePlot, levels = c(as.character(date_levels[date_levels != last_date]),
+                                          " ",  # blank spacer
+                                          as.character(last_date)))
+  )
+
+# --- 4) Plot (one panel per taxon, colored by tank) ---
+p <- ggplot(sum_top, aes(x = DatePlot, y = mean_rel, color = tank.x.x, group = tank.x.x)) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 1.8) +
+  geom_errorbar(aes(ymin = mean_rel - se_rel, ymax = mean_rel + se_rel), width = 0.1, alpha = 0.6) +
+  facet_wrap(~ Taxon, scales = "free_y", ncol = 4) +
+  theme_bw() +
+  labs(
+    x = "Date",
+    y = "Mean relative abundance (± SE)",
+    color = "Tank",
+    title = "Top 10 taxa trajectories by tank",
+    subtitle = "Extra spacing inserted before the last sampling date"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  );p
+#ggsave(filename = "outputs/acer_topten_lines.pdf", plot = last_plot())
+
+
+
+
+
+#plot of JUST OTU0001
+
+
+# 0) Make sure Date.x is character (raw strings like "4/3/23")
+otu_top <- otu_top %>%
+  mutate(
+    Date_raw = as.character(Date.x),
+    Date_raw = trimws(Date_raw)
+  )
+
+# 1) Parse using the format you actually have: m/d/yy
+otu_top <- otu_top %>%
+  mutate(
+    Date_real = as.Date(Date_raw, format = "%m/%d/%y")
+  )
+
+# 2) Sanity checks
+if (any(is.na(otu_top$Date_real))) {
+  bad <- unique(otu_top$Date_raw[is.na(otu_top$Date_real)])
+  stop("Some Date.x values did not parse. Examples: ", paste(bad, collapse = ", "))
+}
+
+# 3) Optional: lock the date ordering you want (chronological)
+date_levels <- as.Date(c("4/3/23","4/5/23","4/7/23","4/11/23","5/15/23"), format = "%m/%d/%y")
+otu_top <- otu_top %>%
+  mutate(
+    Date_f = factor(Date_real, levels = date_levels)
+  )
+
+fig1 <- sum_top %>%
+  filter(Taxon == "Otu0001") %>%
+  ggplot(aes(
+    x = Date.x,
+    y = mean_rel,
+    color = tank.x,
+    group = tank.x
+  )) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2) +
+  scale_x_date(
+    date_breaks = "1 week",
+    date_labels = "%b %d"
+  ) +
+  labs(
+    x = "Sampling date",
+    y = "Relative abundance",
+    title = "Dominant OTU (Otu0001) across tanks"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.title = element_blank()
+  )
+
+fig1
+
+
+```
+
+
 
